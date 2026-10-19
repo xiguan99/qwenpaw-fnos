@@ -1,0 +1,4 @@
+#!/bin/bash
+pkill -9 -f "qwenpaw app --host 127.0.0.1 --port 2278" 2>/dev/null || true
+pkill -9 -f "fngateway.py --listen 127.0.0.1:2278" 2>/dev/null || true
+exit 0

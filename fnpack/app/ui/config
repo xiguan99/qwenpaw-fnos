@@ -1,0 +1,14 @@
+{
+  ".url": {
+    "qwenpaw.Application": {
+      "title": "QwenPaw",
+      "icon": "images/icon_{0}.png",
+      "type": "iframe",
+      "protocol": "",
+      "gatewayPrefix": "/app/qwenpaw",
+      "gatewaySocket": "app.sock",
+      "url": "/app/qwenpaw",
+      "allUsers": true
+    }
+  }
+}

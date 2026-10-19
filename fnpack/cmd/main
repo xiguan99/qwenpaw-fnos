@@ -1,0 +1,139 @@
+#!/bin/bash
+# qwenpaw 生命周期入口（照 freellmapi/deepseek.harness.fnos 版式）
+# 双进程：qwenpaw 本体（venv python）+ fngateway（套件 python312，纯 stdlib）
+LOG_FILE="${TRIM_PKGVAR}/info.log"
+GW_LOG="${TRIM_PKGVAR}/gateway.log"
+PID_FILE="${TRIM_PKGVAR}/app.pid"
+GW_PID_FILE="${TRIM_PKGVAR}/gw.pid"
+APP_DIR="${TRIM_APPDEST}"
+
+LIB_TYPE="${wizard_data_library_type:-data}"
+if [ "${LIB_TYPE}" = "data" ]; then
+    DATA_LIBRARY_PATH="${TRIM_PKGVAR}"
+else
+    DATA_LIBRARY_PATH="${TRIM_DATA_SHARE_PATHS%%:*}"
+fi
+RUN_USER="${wizard_run_user:-root}"
+DATA_DIR="${DATA_LIBRARY_PATH}/data"
+
+VENV="${TRIM_PKGVAR}/venv"
+WHEEL_DIR="${APP_DIR}/wheels"
+
+# 套件 PATH（守护环境不含 python312，显式解析）
+PY_RUNTIME="/var/apps/python312/target/bin/python3"
+[ -x "${PY_RUNTIME}" ] || PY_RUNTIME="$(command -v python3 || true)"
+
+export HOME="${DATA_DIR}"
+export QWENPAW_PORT="2278"
+
+log_msg() { echo "$(date '+%Y-%m-%d %H:%M:%S') [INFO] $1" >> "${LOG_FILE}"; }
+log_err() { echo "$(date '+%Y-%m-%d %H:%M:%S') [ERROR] $1" >> "${LOG_FILE}"; }
+check_process() { kill -0 "$1" 2>/dev/null; }
+
+as_run_user() {
+    # 以所选运行用户执行命令（root 时直接执行）
+    if [ "${RUN_USER}" != "root" ] && id "${RUN_USER}" >/dev/null 2>&1; then
+        su -s /bin/bash "${RUN_USER}" -c "$1"
+    else
+        bash -c "$1"
+    fi
+}
+
+status() {
+    if [ -f "${PID_FILE}" ]; then
+        pid=$(head -n 1 "${PID_FILE}" | tr -d '[:space:]')
+        if check_process "${pid}"; then return 0; else rm -f "${PID_FILE}"; fi
+    fi
+    return 1
+}
+
+gw_status() {
+    if [ -f "${GW_PID_FILE}" ]; then
+        pid=$(head -n 1 "${GW_PID_FILE}" | tr -d '[:space:]')
+        if check_process "${pid}"; then return 0; else rm -f "${GW_PID_FILE}"; fi
+    fi
+    return 1
+}
+
+ensure_venv() {
+    # venv 持久在 PKGVAR（升级保留）；缺失时重建并从包内 wheel 安装（依赖联网拉取）
+    [ -x "${VENV}/bin/python" ] && return 0
+    log_msg "venv 缺失，重建并安装 wheel（依赖需联网，约几分钟）"
+    [ -n "${PY_RUNTIME}" ] || { log_err "python312 套件未找到，无法建 venv"; return 1; }
+    ls "${WHEEL_DIR}"/*.whl >/dev/null 2>&1 || { log_err "找不到 ${WHEEL_DIR}/*.whl"; return 1; }
+    mkdir -p "${DATA_DIR}" 2>/dev/null || true
+    as_run_user "mkdir -p '${DATA_DIR}' && '${PY_RUNTIME}' -m venv '${VENV}'" || { log_err "venv 创建失败"; return 1; }
+    as_run_user "export HOME='${DATA_DIR}' && '${VENV}/bin/pip' install --no-input '${WHEEL_DIR}'/*.whl 'setuptools<82' >> '${LOG_FILE}' 2>&1" || { log_err "pip install 失败"; return 1; }
+    log_msg "venv 就绪"
+    return 0
+}
+
+start_process() {
+    status && return 0
+    ensure_venv || return 1
+    log_msg "启动 qwenpaw (PORT=${QWENPAW_PORT}, USER=${RUN_USER}, DATA=${DATA_DIR})"
+    as_run_user "cd '${APP_DIR}' && exec '${VENV}/bin/python' -m qwenpaw app --host 127.0.0.1 --port ${QWENPAW_PORT} >> '${LOG_FILE}' 2>&1 & echo \$!" &
+    pid=$!
+    sleep 3
+    if ! check_process "${pid}"; then
+        real=$(pgrep -f "qwenpaw app --host 127.0.0.1 --port ${QWENPAW_PORT}" | head -1)
+        [ -n "${real}" ] && pid="${real}"
+    fi
+    if check_process "${pid}"; then
+        printf "%s" "${pid}" > "${PID_FILE}"
+        log_msg "qwenpaw 启动成功 PID=${pid}"
+    else
+        log_err "qwenpaw 启动失败"
+        return 1
+    fi
+    start_gateway
+    return 0
+}
+
+start_gateway() {
+    gw_status && return 0
+    [ -x "${PY_RUNTIME}" ] || { log_err "fngateway 需要 python312 套件"; return 1; }
+    [ -f "${APP_DIR}/fngateway.py" ] || { log_err "找不到 ${APP_DIR}/fngateway.py"; return 1; }
+    log_msg "启动 fngateway (listen 127.0.0.1:${QWENPAW_PORT}, socket ${APP_DIR}/app.sock)"
+    as_run_user "exec '${PY_RUNTIME}' '${APP_DIR}/fngateway.py' --listen 127.0.0.1:${QWENPAW_PORT} --socket '${APP_DIR}/app.sock' --prefix /app/qwenpaw >> '${GW_LOG}' 2>&1 & echo \$!" &
+    pid=$!
+    sleep 2
+    if ! check_process "${pid}"; then
+        real=$(pgrep -f "fngateway.py --listen 127.0.0.1:${QWENPAW_PORT}" | head -1)
+        [ -n "${real}" ] && pid="${real}"
+    fi
+    if check_process "${pid}"; then
+        printf "%s" "${pid}" > "${GW_PID_FILE}"
+        log_msg "fngateway 启动成功 PID=${pid}"
+        return 0
+    fi
+    log_err "fngateway 启动失败（见 ${GW_LOG}）"
+    return 1
+}
+
+stop_process() {
+    log_msg "停止 qwenpaw + fngateway"
+    for pf in "${GW_PID_FILE}" "${PID_FILE}"; do
+        if [ -f "${pf}" ]; then
+            pid=$(head -n 1 "${pf}" | tr -d '[:space:]')
+            if check_process "${pid}"; then
+                kill -TERM "${pid}" 2>/dev/null
+                count=0
+                while check_process "${pid}" && [ $count -lt 5 ]; do sleep 1; count=$((count+1)); done
+                check_process "${pid}" && { log_err "5 秒未退出，SIGKILL"; kill -KILL "${pid}" 2>/dev/null || true; }
+            fi
+            rm -f "${pf}"
+        fi
+    done
+    pkill -9 -f "qwenpaw app --host 127.0.0.1 --port ${QWENPAW_PORT}" 2>/dev/null || true
+    pkill -9 -f "fngateway.py --listen 127.0.0.1:${QWENPAW_PORT}" 2>/dev/null || true
+    log_msg "已停止"
+    return 0
+}
+
+case $1 in
+start)   start_process ;;
+stop)    stop_process ;;
+status)  status && exit 0 || exit 3 ;;
+*)       exit 1 ;;
+esac

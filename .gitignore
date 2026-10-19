@@ -1,0 +1,8 @@
+upstream
+stage/
+dist/*.fpk
+fnpack/app/*
+!fnpack/app/ui
+scripts/.secrets.env
+scripts/.sync.lock
+PROJECT.md
