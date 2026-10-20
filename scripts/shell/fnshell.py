@@ -720,7 +720,8 @@ class ShellRuntime:
                        "start-backend": "start-backend", "stop-backend": "stop-backend",
                        "restart-backend": "restart-backend"}
 
-    def __init__(self, panel_root=None, cmd_dir=None, state_dir=None, public_port=None, default_backend=None):
+    def __init__(self, panel_root=None, cmd_dir=None, state_dir=None, public_port=None, default_backend=None,
+                 main_url=None, version_file=None, github_repo=None):
         self.panel_root = panel_root
         self.cmd_dir = cmd_dir
         self.state_dir = state_dir
@@ -728,6 +729,132 @@ class ShellRuntime:
         self.default_backend = default_backend
         self.sessions = {}
         self.lock = threading.Lock()
+        # 面板模式（双 app）：main_url 非空时状态聚合/本体日志/动作转发到本体壳；main_url 空=本体自身行为
+        self.main_url = (main_url or "").rstrip("/") or None
+        self.version_file = version_file
+        self.github_repo = github_repo
+        self._main_cache = (0.0, None)   # (ts, json)
+        self._update_cache = (0.0, None)
+
+    # ---------- 面板模式：对本体壳的取数/转发 ----------
+    def _http_json(self, url, method="GET", body=None, timeout=5):
+        u = urlparse(url)
+        try:
+            if u.scheme == "https":
+                conn = http.client.HTTPSConnection(u.hostname, u.port or 443, timeout=timeout)
+            else:
+                conn = http.client.HTTPConnection(u.hostname, u.port or 80, timeout=timeout)
+            headers = {"Accept": "application/json", "User-Agent": "qwenpaw-fnos-shell"}
+            tok = os.environ.get("GITHUB_TOKEN") or os.environ.get("GITHUB_PAT_PUSH") or os.environ.get("DSH_SECRET_GITHUB_PAT_PUSH")
+            if u.hostname == "api.github.com" and tok:
+                headers["Authorization"] = "Bearer " + tok
+            path = u.path + (("?" + u.query) if u.query else "")
+            data = json.dumps(body).encode("utf-8") if body is not None else None
+            if data is not None:
+                headers["Content-Type"] = "application/json"
+            conn.request(method, path, data, headers)
+            resp = conn.getresponse()
+            raw = resp.read().decode("utf-8", "replace")
+            conn.close()
+            if resp.status >= 400:
+                return None
+            return json.loads(raw)
+        except Exception:
+            return None
+
+    def main_status_cached(self, maxage=5.0):
+        if not self.main_url:
+            return None
+        ts, val = self._main_cache
+        if time.time() - ts > maxage:
+            val = self._http_json(self.main_url + "/shell/api/status", timeout=3)
+            self._main_cache = (time.time(), val)
+        return val
+
+    def status_merged(self, handler):
+        """面板模式 status：本体数据为主，面板本地 shell/auth 覆盖（顶部胶囊语义不变）。"""
+        local = self.status_json(handler)
+        main = self.main_status_cached()
+        if not main:
+            return {**local, "main": {"url": self.main_url, "reachable": False}}
+        merged = dict(main)
+        merged["shell"] = local["shell"]           # 顶部 pillShell = 面板自身进程
+        merged["auth"] = local["auth"]             # 登录门禁 = 面板自身
+        merged["main"] = {"url": self.main_url, "reachable": True}
+        return merged
+
+    def check_update(self, handler):
+        if self.main_url:  # 面板模式：查的是本体的更新（本体 VERSION 才准）
+            self.forward_main_json(handler, "check-update")
+            return
+        if not self.github_repo:
+            self.json_out(handler, 200, {"ok": False, "error": "no_repo_configured"})
+            return
+        ts, cached = self._update_cache
+        if cached and time.time() - ts < 60:
+            self.json_out(handler, 200, cached)
+            return
+        cur = os.environ.get("TRIM_APPVER")  # fnOS 注入（生产主路径）；测试/开发回退 VERSION 文件
+        if not cur:
+            try:
+                with open(self.version_file or "VERSION") as f:
+                    cur = f.read().strip()
+            except Exception:
+                pass
+        latest = self._http_json("https://api.github.com/repos/%s/releases/latest" % self.github_repo, timeout=8)
+        if latest is None:
+            self.json_out(handler, 200, {"ok": False, "error": "github_unreachable", "current": cur})
+            return
+        latest_tag = str(latest.get("tag_name") or "").lstrip("v")
+        out = {"ok": True, "current": cur,
+               "latest": latest_tag or None,
+               "has_update": bool(latest_tag) and bool(cur) and latest_tag != cur,
+               "url": latest.get("html_url"),
+               "published_at": latest.get("published_at"),
+               "notes": (latest.get("body") or "")[:600]}
+        self._update_cache = (time.time(), out)
+        self.json_out(handler, 200, out)
+
+    def forward_main_json(self, handler, suffix, body=None):
+        """面板模式 JSON 转发（service POST 体透传）。"""
+        if body is None and handler.command == "POST":
+            body = self.read_json(handler)
+        url = self.main_url + "/shell/api/" + suffix
+        r = self._http_json(url, method=handler.command, body=body)
+        if r is None:
+            self.json_out(handler, 502, {"ok": False, "error": "main_unreachable", "main": self.main_url})
+        else:
+            self.json_out(handler, 200, r)
+
+    def relay_main_logs(self, handler, query):
+        """SSE 中继：从本体壳 logs 端点逐行转发。"""
+        try:
+            u = urlparse(self.main_url + "/shell/api/logs")
+            conn = http.client.HTTPConnection(u.hostname, u.port or 80, timeout=120)
+            conn.request("GET", u.path + (("?" + query) if query else ""), headers={"Accept": "text/event-stream"})
+            resp = conn.getresponse()
+            handler.send_response(resp.status)
+            for k, v in resp.getheaders():
+                if k.lower() in ("content-type", "cache-control"):
+                    handler.send_header(k, v)
+            handler.send_header("Connection", "close")
+            handler.end_headers()
+            while True:
+                line = resp.readline()
+                if not line:
+                    break
+                handler.wfile.write(line)
+                handler.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+        except Exception as e:
+            logger.error(f"日志中继失败: {e}")
+        finally:
+            self.close_connection = True
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     # ---------- 配置与鉴权 ----------
     def config_path(self):
@@ -856,13 +983,26 @@ class ShellRuntime:
     def handle_api(self, handler, path, query):
         route = path[len("/shell/api"):].lstrip("/")
         if route == "status":  # 轻端点，面板登录前即需
-            self.json_out(handler, 200, self.status_json(handler))
+            self.json_out(handler, 200, self.status_merged(handler) if self.main_url else self.status_json(handler))
+        elif route == "check-update":
+            if self.require_auth(handler):
+                self.check_update(handler)
         elif route == "logs":
             if self.require_auth(handler):
-                self.sse_logs(handler, query)
+                src = (parse_qs(query).get("src") or ["app"])[0]
+                if self.main_url and src == "app":
+                    self.relay_main_logs(handler, query)  # 本体日志 = 本体的 state 日志，面板读不到
+                else:
+                    self.sse_logs(handler, query)
         elif route == "service":
             if self.require_auth(handler):
-                self.exec_service(handler)
+                body = None
+                if self.main_url:
+                    body = self.read_json(handler)
+                    if not str((body or {}).get("action", "")).endswith("-panel"):
+                        self.forward_main_json(handler, "service", body)  # 本体动作转发；-panel 动作本地执行
+                        return
+                self.exec_service(handler, body)
         elif route == "config":
             if not self.require_auth(handler):
                 return
@@ -1033,8 +1173,8 @@ class ShellRuntime:
             pass
 
     # ---------- 服务控制 ----------
-    def exec_service(self, handler):
-        body = self.read_json(handler) or {}
+    def exec_service(self, handler, body=None):
+        body = body if body is not None else self.read_json(handler) or {}
         action = self.SERVICE_ACTIONS.get(str(body.get("action", "")))
         if not action or not self.cmd_dir or not os.path.isfile(os.path.join(self.cmd_dir, "main")):
             self.json_out(handler, 400, {"ok": False, "error": "bad_action_or_no_cmd"})
@@ -1164,6 +1304,9 @@ def main():
     parser.add_argument("--panel", type=str, default=None, help="面板静态站目录")
     parser.add_argument("--cmd-dir", type=str, default=None, help="服务控制 cmd 脚本目录")
     parser.add_argument("--state", type=str, default=None, help="状态目录（pidfile/日志/配置），默认 TRIM_PKGVAR")
+    parser.add_argument("--main-url", type=str, default=None, help="面板模式：本体壳地址 http://127.0.0.1:PORT（状态聚合/日志中继/动作转发）")
+    parser.add_argument("--version-file", type=str, default=None, help="检查更新用的 VERSION 文件路径")
+    parser.add_argument("--github-repo", type=str, default=None, help="检查更新的 GitHub 仓库 owner/name")
     args = parser.parse_args()
 
     backend = args.backend or args.listen
@@ -1175,7 +1318,8 @@ def main():
     target_host, target_port = parse_listen_address(backend)
     state_dir = args.state or os.environ.get("TRIM_PKGVAR") or None
     rt = ShellRuntime(panel_root=args.panel, cmd_dir=args.cmd_dir, state_dir=state_dir,
-                      public_port=args.tcp, default_backend=(target_host, target_port))
+                      public_port=args.tcp, default_backend=(target_host, target_port),
+                      main_url=args.main_url, version_file=args.version_file, github_repo=args.github_repo)
 
     def cleanup():
         if args.socket and os.path.exists(args.socket):

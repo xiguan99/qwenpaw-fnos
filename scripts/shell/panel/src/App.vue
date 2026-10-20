@@ -4,14 +4,20 @@ import { store, refreshStatus, syncTabFromHash, setTab, setLang, cycleTheme, res
 import { useT } from './i18n'
 import AppView from './views/AppView.vue'
 import Overview from './views/Overview.vue'
+import Update from './views/Update.vue'
+import Plugins from './views/Plugins.vue'
+import Workspaces from './views/Workspaces.vue'
+import Models from './views/Models.vue'
+import Snapshots from './views/Snapshots.vue'
+import Settings from './views/Settings.vue'
 import Logs from './views/Logs.vue'
 import Control from './views/Control.vue'
 import Login from './components/Login.vue'
-import { Paw as IconPaw, Dashboard as IconLayoutDashboard, Terminal2 as IconTerminal2, Settings as IconSettings, Sun as IconSun, Moon as IconMoon, MoonStars as IconSunMoon, Language as IconLanguage } from '@vicons/tabler'
+import { Paw as IconPaw, Dashboard as IconLayoutDashboard, Terminal2 as IconTerminal2, Settings as IconSettings, Sun as IconSun, Moon as IconMoon, MoonStars as IconSunMoon, Language as IconLanguage, Refresh as IconRefresh, Package as IconPackage, Folder as IconFolder, Cpu as IconCpu, History as IconHistory, Adjustments as IconSettings2 } from '@vicons/tabler'
 
 const t = useT()
-const VIEWS = { app: AppView, overview: Overview, logs: Logs, control: Control }
-const TAB_ICONS = { app: IconPaw, overview: IconLayoutDashboard, logs: IconTerminal2, control: IconSettings }
+const VIEWS = { app: AppView, overview: Overview, update: Update, plugins: Plugins, workspaces: Workspaces, models: Models, snapshots: Snapshots, settings: Settings, logs: Logs, control: Control }
+const TAB_ICONS = { app: IconPaw, overview: IconLayoutDashboard, update: IconRefresh, plugins: IconPackage, workspaces: IconFolder, models: IconCpu, snapshots: IconHistory, settings: IconSettings2, logs: IconTerminal2, control: IconSettings }
 const CurrentView = computed(() => VIEWS[store.tab] || AppView)
 const ThemeIcon = computed(() => (store.theme === 'light' ? IconSun : store.theme === 'dark' ? IconMoon : IconSunMoon))
 const authGate = computed(() => store.status && store.status.auth && store.status.auth.required && !store.status.auth.authorized)

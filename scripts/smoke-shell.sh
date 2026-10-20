@@ -75,7 +75,8 @@ echo "─── [6] 路由验证集"
 curl -s --max-time 8 "http://127.0.0.1:2279/" -o "$T/v_root.html"; chk "A 直连根=面板" "$PANEL_MARK" "$T/v_root.html" "GET /"
 curl -s --max-time 8 "http://127.0.0.1:2279/qwenpaw/" -o "$T/v_app.html"; chk "B /qwenpaw/=本体HTML" "$APP_MARK" "$T/v_app.html" "iframe 命名空间剥段反代"
 curl -s --max-time 8 --unix-socket "$T/test.sock" "http://localhost/app/qwenpaw/" -o "$T/v_gw.html"; chk "C UDS prefix=面板" "$PANEL_MARK" "$T/v_gw.html" "fnOS 网关路径"
-chkcode "D panel 静态资源直出" 200 "http://127.0.0.1:2279/assets/index-BScZE7Ud.css"
+ASSET=$(grep -o 'assets/index-[A-Za-z0-9_-]*\.css' "$DIST/index.html" | head -1)
+chkcode "D panel 静态资源直出" 200 "http://127.0.0.1:2279/$ASSET"
 chkcode "E status API JSON" 200 "http://127.0.0.1:2279/shell/api/status"; chk "E2 status 字段" '"backend"' "$T/_c.out" "status_json"
 grep -o '"shell":{[^}]*' "$T/_c.out" | head -1; grep -o '"backend":{[^}]*' "$T/_c.out" | head -1; grep -o '"auth":{[^}]*' "$T/_c.out" | head -1
 

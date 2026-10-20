@@ -69,7 +69,30 @@ export async function apiPost(path, body) {
   return j
 }
 
-export const TABS = ['app', 'overview', 'logs', 'control']
+export async function appApi(path, opts = {}) {
+  // qwenpaw 官方 API：相对路径 'qwenpaw/api/…'，单包/双 app 两种模式都经壳反代直达本体
+  const r = await fetch(path, {
+    method: opts.method || 'GET',
+    headers: opts.body ? { 'Content-Type': 'application/json' } : {},
+    body: opts.body ? JSON.stringify(opts.body) : undefined,
+  })
+  let j = null
+  try { j = await r.json() } catch (e) {}
+  if (r.status === 401) {
+    const err = new Error('unauthorized')
+    err.code = 401
+    throw err
+  }
+  if (!r.ok) {
+    const det = j && (j.detail || j.error)
+    const err = new Error(typeof det === 'string' ? det : 'HTTP ' + r.status)
+    err.code = r.status
+    throw err
+  }
+  return j
+}
+
+export const TABS = ['app', 'overview', 'update', 'plugins', 'workspaces', 'models', 'snapshots', 'settings', 'logs', 'control']
 
 export function setTab(t) {
   store.tab = t

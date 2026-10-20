@@ -113,7 +113,7 @@ start_gateway() {
     [ -x "${PY_RUNTIME}" ] || { log_err "fnshell 需要 python312 套件"; return 1; }
     [ -f "${APP_DIR}/fnshell.py" ] || { log_err "找不到 ${APP_DIR}/fnshell.py"; return 1; }
     log_msg "启动 fnshell (tcp ${QWENPAW_PORT}, backend 127.0.0.1:${QWENPAW_INTERNAL_PORT}, socket ${APP_DIR}/app.sock)"
-    as_run_user "exec '${PY_RUNTIME}' '${APP_DIR}/fnshell.py' --backend 127.0.0.1:${QWENPAW_INTERNAL_PORT} --socket '${APP_DIR}/app.sock' --prefix /app/qwenpaw --tcp ${QWENPAW_PORT} --panel '${APP_DIR}/panel_dist' --cmd-dir '${APP_DIR}/cmd' >> '${GW_LOG}' 2>&1 & echo \$!" &
+    as_run_user "exec '${PY_RUNTIME}' '${APP_DIR}/fnshell.py' --backend 127.0.0.1:${QWENPAW_INTERNAL_PORT} --socket '${APP_DIR}/app.sock' --prefix /app/qwenpaw --tcp ${QWENPAW_PORT} --panel '${APP_DIR}/panel_dist' --cmd-dir '${APP_DIR}/cmd' --github-repo xiguan99/qwenpaw-fnos >> '${GW_LOG}' 2>&1 & echo \$!" &
     pid=$!
     sleep 2
     if ! check_process "${pid}"; then
