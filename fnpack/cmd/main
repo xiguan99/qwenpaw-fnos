@@ -1,6 +1,6 @@
 #!/bin/bash
 # qwenpaw 生命周期入口（照 freellmapi/deepseek.harness.fnos 版式）
-# 双进程：qwenpaw 本体（venv python）+ fngateway（套件 python312，纯 stdlib）
+# 双进程：qwenpaw 本体（venv python，绑内部端口）+ fnshell（壳：面板+反代+网关 socket，监听对外端口）
 LOG_FILE="${TRIM_PKGVAR}/info.log"
 GW_LOG="${TRIM_PKGVAR}/gateway.log"
 PID_FILE="${TRIM_PKGVAR}/app.pid"
@@ -24,7 +24,8 @@ PY_RUNTIME="/var/apps/python312/target/bin/python3"
 [ -x "${PY_RUNTIME}" ] || PY_RUNTIME="$(command -v python3 || true)"
 
 export HOME="${DATA_DIR}"
-export QWENPAW_PORT="2278"
+export QWENPAW_PORT="2278"          # 对外端口：壳（fnshell）监听，桌面图标与浏览器都走它
+export QWENPAW_INTERNAL_PORT="22781"  # 本体内部端口，仅 127.0.0.1，由壳反代
 
 log_msg() { echo "$(date '+%Y-%m-%d %H:%M:%S') [INFO] $1" >> "${LOG_FILE}"; }
 log_err() { echo "$(date '+%Y-%m-%d %H:%M:%S') [ERROR] $1" >> "${LOG_FILE}"; }
@@ -71,12 +72,12 @@ ensure_venv() {
 start_process() {
     status && return 0
     ensure_venv || return 1
-    log_msg "启动 qwenpaw (PORT=${QWENPAW_PORT}, USER=${RUN_USER}, DATA=${DATA_DIR})"
-    as_run_user "cd '${APP_DIR}' && exec '${VENV}/bin/python' -m qwenpaw app --host 127.0.0.1 --port ${QWENPAW_PORT} >> '${LOG_FILE}' 2>&1 & echo \$!" &
+    log_msg "启动 qwenpaw (INTERNAL_PORT=${QWENPAW_INTERNAL_PORT}, USER=${RUN_USER}, DATA=${DATA_DIR})"
+    as_run_user "cd '${APP_DIR}' && exec '${VENV}/bin/python' -m qwenpaw app --host 127.0.0.1 --port ${QWENPAW_INTERNAL_PORT} >> '${LOG_FILE}' 2>&1 & echo \$!" &
     pid=$!
     sleep 3
     if ! check_process "${pid}"; then
-        real=$(pgrep -f "qwenpaw app --host 127.0.0.1 --port ${QWENPAW_PORT}" | head -1)
+        real=$(pgrep -f "qwenpaw app --host 127.0.0.1 --port ${QWENPAW_INTERNAL_PORT}" | head -1)
         [ -n "${real}" ] && pid="${real}"
     fi
     if check_process "${pid}"; then
@@ -90,50 +91,89 @@ start_process() {
     return 0
 }
 
+start_backend_only() {
+    status && { log_msg "qwenpaw 已在运行"; return 0; }
+    gw_status || { log_err "壳未运行，先 start"; return 1; }
+    ensure_venv || return 1
+    log_msg "启动 qwenpaw 本体 (INTERNAL_PORT=${QWENPAW_INTERNAL_PORT})"
+    as_run_user "cd '${APP_DIR}' && exec '${VENV}/bin/python' -m qwenpaw app --host 127.0.0.1 --port ${QWENPAW_INTERNAL_PORT} >> '${LOG_FILE}' 2>&1 & echo \$!" &
+    pid=$!
+    sleep 3
+    if ! check_process "${pid}"; then
+        real=$(pgrep -f "qwenpaw app --host 127.0.0.1 --port ${QWENPAW_INTERNAL_PORT}" | head -1)
+        [ -n "${real}" ] && pid="${real}"
+    fi
+    check_process "${pid}" || { log_err "qwenpaw 启动失败"; return 1; }
+    printf "%s" "${pid}" > "${PID_FILE}"
+    log_msg "qwenpaw 启动成功 PID=${pid}"
+}
+
 start_gateway() {
     gw_status && return 0
-    [ -x "${PY_RUNTIME}" ] || { log_err "fngateway 需要 python312 套件"; return 1; }
-    [ -f "${APP_DIR}/fngateway.py" ] || { log_err "找不到 ${APP_DIR}/fngateway.py"; return 1; }
-    log_msg "启动 fngateway (listen 127.0.0.1:${QWENPAW_PORT}, socket ${APP_DIR}/app.sock)"
-    as_run_user "exec '${PY_RUNTIME}' '${APP_DIR}/fngateway.py' --listen 127.0.0.1:${QWENPAW_PORT} --socket '${APP_DIR}/app.sock' --prefix /app/qwenpaw >> '${GW_LOG}' 2>&1 & echo \$!" &
+    [ -x "${PY_RUNTIME}" ] || { log_err "fnshell 需要 python312 套件"; return 1; }
+    [ -f "${APP_DIR}/fnshell.py" ] || { log_err "找不到 ${APP_DIR}/fnshell.py"; return 1; }
+    log_msg "启动 fnshell (tcp ${QWENPAW_PORT}, backend 127.0.0.1:${QWENPAW_INTERNAL_PORT}, socket ${APP_DIR}/app.sock)"
+    as_run_user "exec '${PY_RUNTIME}' '${APP_DIR}/fnshell.py' --backend 127.0.0.1:${QWENPAW_INTERNAL_PORT} --socket '${APP_DIR}/app.sock' --prefix /app/qwenpaw --tcp ${QWENPAW_PORT} --panel '${APP_DIR}/panel_dist' --cmd-dir '${APP_DIR}/cmd' >> '${GW_LOG}' 2>&1 & echo \$!" &
     pid=$!
     sleep 2
     if ! check_process "${pid}"; then
-        real=$(pgrep -f "fngateway.py --listen 127.0.0.1:${QWENPAW_PORT}" | head -1)
+        real=$(pgrep -f "fnshell.py --backend 127.0.0.1:${QWENPAW_INTERNAL_PORT}" | head -1)
         [ -n "${real}" ] && pid="${real}"
     fi
     if check_process "${pid}"; then
         printf "%s" "${pid}" > "${GW_PID_FILE}"
-        log_msg "fngateway 启动成功 PID=${pid}"
+        log_msg "fnshell 启动成功 PID=${pid}"
         return 0
     fi
-    log_err "fngateway 启动失败（见 ${GW_LOG}）"
+    log_err "fnshell 启动失败（见 ${GW_LOG}）"
     return 1
 }
 
-stop_process() {
-    log_msg "停止 qwenpaw + fngateway"
-    for pf in "${GW_PID_FILE}" "${PID_FILE}"; do
-        if [ -f "${pf}" ]; then
-            pid=$(head -n 1 "${pf}" | tr -d '[:space:]')
-            if check_process "${pid}"; then
-                kill -TERM "${pid}" 2>/dev/null
-                count=0
-                while check_process "${pid}" && [ $count -lt 5 ]; do sleep 1; count=$((count+1)); done
-                check_process "${pid}" && { log_err "5 秒未退出，SIGKILL"; kill -KILL "${pid}" 2>/dev/null || true; }
-            fi
-            rm -f "${pf}"
+stop_pidfile() {
+    # $1=pidfile $2=pkill 模式串
+    pf="$1"; pat="$2"
+    if [ -f "${pf}" ]; then
+        pid=$(head -n 1 "${pf}" | tr -d '[:space:]')
+        if check_process "${pid}"; then
+            kill -TERM "${pid}" 2>/dev/null
+            count=0
+            while check_process "${pid}" && [ $count -lt 5 ]; do sleep 1; count=$((count+1)); done
+            check_process "${pid}" && { log_err "5 秒未退出，SIGKILL"; kill -KILL "${pid}" 2>/dev/null || true; }
         fi
-    done
-    pkill -9 -f "qwenpaw app --host 127.0.0.1 --port ${QWENPAW_PORT}" 2>/dev/null || true
-    pkill -9 -f "fngateway.py --listen 127.0.0.1:${QWENPAW_PORT}" 2>/dev/null || true
+        rm -f "${pf}"
+    fi
+    pkill -9 -f "${pat}" 2>/dev/null || true
+}
+
+stop_backend() {
+    log_msg "停止 qwenpaw 本体"
+    stop_pidfile "${PID_FILE}" "qwenpaw app --host 127.0.0.1 --port ${QWENPAW_INTERNAL_PORT}"
+    log_msg "已停止"
+}
+
+stop_shell() {
+    log_msg "停止 fnshell"
+    stop_pidfile "${GW_PID_FILE}" "fnshell.py --backend 127.0.0.1:${QWENPAW_INTERNAL_PORT}"
+    log_msg "已停止"
+}
+
+stop_process() {
+    log_msg "停止 qwenpaw + fnshell"
+    stop_pidfile "${PID_FILE}" "qwenpaw app --host 127.0.0.1 --port ${QWENPAW_INTERNAL_PORT}"
+    stop_pidfile "${GW_PID_FILE}" "fnshell.py --backend 127.0.0.1:${QWENPAW_INTERNAL_PORT}"
+    # 升级兼容：2.2.2.1 旧实例（app 直连 2278 + fngateway）兜底
+    pkill -9 -f "qwenpaw app --host 127.0.0.1 --port 2278" 2>/dev/null || true
+    pkill -9 -f "fngateway.py --listen 127.0.0.1:2278" 2>/dev/null || true
     log_msg "已停止"
     return 0
 }
 
 case $1 in
-start)   start_process ;;
-stop)    stop_process ;;
-status)  status && exit 0 || exit 3 ;;
-*)       exit 1 ;;
+start)            start_process ;;
+stop)             stop_process ;;
+status)           status && exit 0 || exit 3 ;;
+start-backend)    start_backend_only ;;
+stop-backend)     stop_backend ;;
+restart-backend)  stop_backend; start_backend_only ;;
+*)                exit 1 ;;
 esac

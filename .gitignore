@@ -6,3 +6,7 @@ fnpack/app/*
 scripts/.secrets.env
 scripts/.sync.lock
 PROJECT.md
+node_modules/
+__pycache__/
+.bak-*/
+*.tar.gz
