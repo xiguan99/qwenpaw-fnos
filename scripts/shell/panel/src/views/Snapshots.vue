@@ -3,6 +3,7 @@ import { ref, onMounted } from 'vue'
 import { appApi, toast } from '../store'
 import { useT } from '../i18n'
 import ItemCard from '../components/ItemCard.vue'
+import PageTitle from '../components/PageTitle.vue'
 import { Refresh as IconRefresh, Plus as IconPlus, Rotate as IconRotate } from '@vicons/tabler'
 
 const t = useT()
@@ -66,6 +67,8 @@ onMounted(load)
 </script>
 
 <template>
+  <div class="vw">
+    <PageTitle :title="t.tab_snapshots" />
   <div class="sbox">
     <div class="sbar">
       <input class="txt" v-model="newName" :placeholder="t.snapNamePh" @keyup.enter="create" />
@@ -84,6 +87,7 @@ onMounted(load)
     </div>
     <div v-if="list && !list.length" class="hint" style="margin-top:8px">{{ t.snapEmpty }}</div>
     <div class="hint" style="margin-top:8px">{{ t.restoreHint }}</div>
+  </div>
   </div>
 </template>
 

@@ -3,6 +3,7 @@ import { ref, onMounted } from 'vue'
 import { appApi, toast } from '../store'
 import { useT } from '../i18n'
 import ItemCard from '../components/ItemCard.vue'
+import PageTitle from '../components/PageTitle.vue'
 import { Refresh as IconRefresh, Trash as IconTrash } from '@vicons/tabler'
 
 const t = useT()
@@ -36,6 +37,8 @@ onMounted(load)
 </script>
 
 <template>
+  <div class="vw">
+    <PageTitle :title="t.tab_plugins" />
   <div class="plist">
     <div class="pbar">
       <span class="hint" style="margin:0">{{ list ? list.length + ' ' + t.pluginsCount : '…' }}</span>
@@ -52,6 +55,7 @@ onMounted(load)
         </div>
       </ItemCard>
     </div>
+  </div>
   </div>
 </template>
 

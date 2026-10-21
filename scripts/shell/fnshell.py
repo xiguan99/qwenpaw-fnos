@@ -1050,6 +1050,21 @@ class ShellRuntime:
         except Exception:
             return None
 
+    def proc_cpu_mem(self, pid):
+        # (cpu_pct, mem_kb) — cpu = utime+stime 平均值相对运行时长；mem = RSS
+        try:
+            with open(f"/proc/{pid}/stat") as f:
+                fields = f.read().rsplit(")", 1)[1].split()
+            ticks = int(fields[11]) + int(fields[12])  # utime+stime, clock ticks
+            up = self.proc_uptime(pid)
+            cpu = round(ticks / (up * os.sysconf("SC_CLK_TCK")) * 100, 1) if up else None
+            mem = None
+            with open(f"/proc/{pid}/statm") as f:
+                mem = int(f.read().split()[1]) * 4  # resident pages -> KB
+            return cpu, mem
+        except Exception:
+            return None, None
+
     def dir_stats(self, path):
         files = size = 0
         try:
@@ -1106,14 +1121,17 @@ class ShellRuntime:
         data_dir = os.environ.get("HOME") or ""
         df, db, dcapped = self.dir_stats(data_dir) if data_dir else (None, None, False)
         pw_hash = self.password_hash()
+        bcpu, bmem = self.proc_cpu_mem(backend_pid) if backend_up else (None, None)
         return {
             "ok": True,
             "shell": {"pid": shell_pid, "uptime_s": self.proc_uptime(shell_pid)},
             "backend": {"running": backend_up, "pid": backend_pid,
-                        "uptime_s": self.proc_uptime(backend_pid) if backend_up else None},
+                        "uptime_s": self.proc_uptime(backend_pid) if backend_up else None,
+                        "cpu_pct": bcpu, "mem_kb": bmem},
             "python": {"venv": self.venv_python_version()},
             "app": {"version": os.environ.get("TRIM_APPVER"),
                     "port_public": self.public_port,
+                    "app_url": self.main_url,
                     "backend": "%s:%d" % self.default_backend if self.default_backend else None,
                     "data_capped": dcapped},
             "data": {"path_basename": os.path.basename(data_dir) if data_dir else None,

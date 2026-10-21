@@ -92,7 +92,7 @@ export async function appApi(path, opts = {}) {
   return j
 }
 
-export const TABS = ['overview', 'update', 'plugins', 'workspaces', 'models', 'snapshots', 'settings', 'logs', 'control']
+export const TABS = ['overview', 'workspaces', 'permissions', 'plugins', 'snapshots', 'logs', 'settings']
 
 export function setTab(t) {
   store.tab = t

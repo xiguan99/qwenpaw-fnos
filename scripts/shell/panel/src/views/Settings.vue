@@ -2,6 +2,7 @@
 import { ref, onMounted, computed } from 'vue'
 import { appApi, toast } from '../store'
 import { useT } from '../i18n'
+import PageTitle from '../components/PageTitle.vue'
 import { Refresh as IconRefresh, ExternalLink as IconExternalLink, Messages as IconMessages } from '@vicons/tabler'
 
 const t = useT()
@@ -40,6 +41,8 @@ const agentList = computed(() => (agents.value && agents.value.agents) || [])
 </script>
 
 <template>
+  <div class="vw">
+    <PageTitle :title="t.tab_settings" />
   <div class="grid s-grid">
     <div class="card">
       <div class="hd">
@@ -64,6 +67,7 @@ const agentList = computed(() => (agents.value && agents.value.agents) || [])
       <div class="hd"><span><IconExternalLink style="vertical-align:-2px" /> {{ t.setEdit }}</span></div>
       <div class="hint" style="margin:0">{{ t.setHint }}<a href="qwenpaw/#/settings" target="_blank" rel="noopener" class="lnk">{{ t.openApp }}</a></div>
     </div>
+  </div>
   </div>
 </template>
 

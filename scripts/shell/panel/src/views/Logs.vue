@@ -1,6 +1,7 @@
 <script setup>
 import { ref, onMounted, onBeforeUnmount } from 'vue'
 import { useT } from '../i18n'
+import PageTitle from '../components/PageTitle.vue'
 import { Trash as IconTrash } from '@vicons/tabler'
 
 const t = useT()
@@ -56,6 +57,8 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
+  <div class="vw">
+    <PageTitle :title="t.tab_logs" />
   <div class="logbox">
     <div class="bar">
       <button class="act" :class="{ primary: src === 'app' }" @click="switchTo('app')">{{ t.logApp }}</button>
@@ -64,5 +67,6 @@ onBeforeUnmount(() => {
       <button class="act" @click="clear"><IconTrash />{{ t.clear }}</button>
     </div>
     <pre ref="box"><div v-for="(l, i) in lines" :key="i" :class="classify(l)">{{ l }}</div></pre>
+  </div>
   </div>
 </template>
