@@ -28,6 +28,7 @@ import ipaddress
 import subprocess
 import http.client
 import socketserver
+import queue
 from urllib.parse import urlparse, parse_qs
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -736,6 +737,11 @@ class ShellRuntime:
         self.github_repo = github_repo
         self._main_cache = (0.0, None)   # (ts, json)
         self._update_cache = (0.0, None)
+        # 飞牛官方技能授权（trim-cli）会话态
+        self.skill_lock = threading.Lock()
+        self.skill_proc = None
+        self.skill_stdin = None
+        self.skill_timer = None
 
     # ---------- 面板模式：对本体壳的取数/转发 ----------
     def _http_json(self, url, method="GET", body=None, timeout=5):
@@ -1014,6 +1020,18 @@ class ShellRuntime:
                 self.json_out(handler, 200, {"ok": True, "config": {
                     "access_password_set": bool(cfg.get("access_password")),
                     "trusted_networks": cfg.get("trusted_networks") or DEFAULT_TRUSTED}})
+        elif route in ("skill-auth", "skill-auth/start", "skill-auth/confirm", "skill-auth/logout"):
+            if self.require_auth(handler):
+                if route == "skill-auth":
+                    self.json_out(handler, 200, dict(ok=True, **self.skill_auth_status()))
+                elif handler.command == "POST" and route == "skill-auth/start":
+                    self.skill_auth_start(handler)
+                elif handler.command == "POST" and route == "skill-auth/confirm":
+                    self.skill_auth_confirm(handler)
+                elif handler.command == "POST" and route == "skill-auth/logout":
+                    self.skill_auth_logout(handler)
+                else:
+                    handler.send_error(405)
         elif route == "login":
             self.post_login(handler)  # 登录本身永远开放
         elif route == "logout":
@@ -1131,7 +1149,7 @@ class ShellRuntime:
             "python": {"venv": self.venv_python_version()},
             "app": {"version": os.environ.get("TRIM_APPVER"),
                     "port_public": self.public_port,
-                    "app_url": self.main_url,
+                    "app_url": self.main_url or (self.prefix or None),
                     "backend": "%s:%d" % self.default_backend if self.default_backend else None,
                     "data_capped": dcapped},
             "data": {"path_basename": os.path.basename(data_dir) if data_dir else None,
@@ -1206,6 +1224,151 @@ class ShellRuntime:
                                          "err": (proc.stderr or "").strip()[-2000:]})
         except Exception as e:
             self.json_out(handler, 500, {"ok": False, "error": str(e)})
+
+    # ---------- 飞牛官方技能授权（trim-cli） ----------
+    def trim_cli_path(self):
+        for cand in (os.environ.get("TRIM_CLI_PATH"),
+                     shutil.which("trim-cli"),
+                     os.path.join(os.environ.get("HOME") or "", "skills", "fnos", "scripts", "trim-cli")):
+            if cand and os.path.isfile(cand) and os.access(cand, os.X_OK):
+                return cand
+        return None
+
+    def trim_cli_env(self):
+        env = dict(os.environ)
+        home = os.environ.get("HOME") or ""
+        env["HOME"] = home
+        env["TRIM_CLI_CONFIG_DIR"] = os.path.join(home, ".config", "trim-cli")
+        return env
+
+    def skill_auth_status(self):
+        cli = self.trim_cli_path()
+        if not cli:
+            return {"authorized": False, "no_cli": True}
+        active = os.path.join(os.environ.get("HOME") or "", ".config", "trim-cli", "secure", "active.enc")
+        if not os.path.exists(active):
+            return {"authorized": False, "username": None}
+        try:
+            out = subprocess.run([cli, "user", "info"], env=self.trim_cli_env(),
+                                 capture_output=True, text=True, timeout=10)
+            u = json.loads(out.stdout) if out.returncode == 0 else {}
+            return {"authorized": True, "username": u.get("username")}
+        except Exception:
+            return {"authorized": False, "username": None}
+
+    def _skill_stop_locked(self):
+        if self.skill_timer:
+            self.skill_timer.cancel()
+            self.skill_timer = None
+        if self.skill_stdin:
+            try:
+                self.skill_stdin.close()
+            except Exception:
+                pass
+            self.skill_stdin = None
+        if self.skill_proc and self.skill_proc.poll() is None:
+            try:
+                self.skill_proc.kill()
+            except Exception:
+                pass
+        self.skill_proc = None
+
+    def skill_auth_start(self, handler):
+        cli = self.trim_cli_path()
+        if not cli:
+            self.json_out(handler, 200, {"ok": False, "error": "no_cli", "url": None})
+            return
+        with self.skill_lock:
+            self._skill_stop_locked()
+        script = shutil.which("script")
+        cmd = [script, "-qec", cli + " login --no-open", "/dev/null"] if script else [cli, "login", "--no-open"]
+        try:
+            p = subprocess.Popen(cmd, env=self.trim_cli_env(), stdin=subprocess.PIPE,
+                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+        except Exception as e:
+            self.json_out(handler, 500, {"ok": False, "error": str(e), "url": None})
+            return
+        found = queue.Queue()
+
+        def scan():
+            try:
+                for line in p.stdout:
+                    if "/signin?" in line:
+                        hit = next((f for f in line.split() if "/signin?" in f), line.strip())
+                        i = hit.find("/signin?")
+                        found.put(hit[i:] if i != -1 else hit)
+                        break
+            except Exception:
+                pass
+
+        threading.Thread(target=scan, daemon=True).start()
+        try:
+            url = found.get(timeout=8)
+        except queue.Empty:
+            with self.skill_lock:
+                self._skill_stop_locked()
+            self.json_out(handler, 504, {"ok": False, "error": "wait_url_timeout", "url": None})
+            return
+        with self.skill_lock:
+            self.skill_proc, self.skill_stdin = p, p.stdin
+            self.skill_timer = threading.Timer(300, self._skill_stop_locked)
+            self.skill_timer.daemon = True
+            self.skill_timer.start()
+        self.json_out(handler, 200, {"ok": True, "url": url})
+
+    def skill_auth_confirm(self, handler):
+        code = str((self.read_json(handler) or {}).get("code") or "").strip()
+        if not code:
+            self.json_out(handler, 400, {"ok": False, "error": "code_required"})
+            return
+        with self.skill_lock:
+            p, stdin = self.skill_proc, self.skill_stdin
+            if not p or not stdin:
+                self.json_out(handler, 400, {"ok": False, "error": "no_pending_session"})
+                return
+            try:
+                stdin.write(code + "\n")
+                stdin.flush()
+            except Exception as e:
+                self._skill_stop_locked()
+                self.json_out(handler, 500, {"ok": False, "error": str(e)})
+                return
+            try:
+                stdin.close()
+            except Exception:
+                pass
+            self.skill_stdin = None
+        try:
+            rc = p.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            self._skill_stop_locked()
+            self.json_out(handler, 504, {"ok": False, "error": "verify_timeout"})
+            return
+        with self.skill_lock:
+            if self.skill_proc is p:
+                self._skill_stop_locked()
+        if rc != 0:
+            self.json_out(handler, 400, {"ok": False, "error": "verify_failed"})
+            return
+        self.json_out(handler, 200, dict(ok=True, **self.skill_auth_status()))
+
+    def skill_auth_logout(self, handler):
+        cli = self.trim_cli_path()
+        if cli:
+            try:
+                subprocess.run([cli, "logout"], env=self.trim_cli_env(), capture_output=True, timeout=15)
+            except Exception:
+                pass
+        cfgdir = os.path.join(os.environ.get("HOME") or "", ".config", "trim-cli")
+        for victim in (os.path.join(cfgdir, "secure"), os.path.join(cfgdir, "session.json")):
+            try:
+                if os.path.isdir(victim):
+                    shutil.rmtree(victim)
+                elif os.path.isfile(victim):
+                    os.remove(victim)
+            except Exception:
+                pass
+        self.json_out(handler, 200, {"ok": True, "authorized": False, "username": None})
 
     # ---------- 配置与登录 ----------
     def post_config(self, handler):

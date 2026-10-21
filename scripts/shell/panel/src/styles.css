@@ -98,6 +98,9 @@ html[data-theme='dark'] .ctrlcard .ic.purple { background: rgba(147,51,234,0.20)
 .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; align-content: start; overflow-y: auto; }
 .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; }
 .card .hd { display: flex; align-items: center; gap: 8px; font-weight: 600; margin-bottom: 8px; cursor: default; }
+.card .hd svg { width: 15px; height: 15px; flex: none; }
+button.act svg { width: 14px; height: 14px; flex: none; }
+.hint svg { width: 13px; height: 13px; vertical-align: -2px; }
 .kv { display: flex; justify-content: space-between; gap: 10px; padding: 3px 0; font-size: 13px; }
 .kv span:first-child { color: var(--tx2); }
 .kv span:last-child { font-weight: 600; text-align: right; word-break: break-all; }

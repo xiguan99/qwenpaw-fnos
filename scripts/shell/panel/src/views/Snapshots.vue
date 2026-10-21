@@ -4,7 +4,7 @@ import { appApi, toast } from '../store'
 import { useT } from '../i18n'
 import ItemCard from '../components/ItemCard.vue'
 import PageTitle from '../components/PageTitle.vue'
-import { Refresh as IconRefresh, Plus as IconPlus, Rotate as IconRotate } from '@vicons/tabler'
+import { Refresh as IconRefresh, Plus as IconPlus, Rotate as IconRotate, Trash as IconTrash } from '@vicons/tabler'
 
 const t = useT()
 const list = ref(null)
@@ -63,6 +63,17 @@ async function restore(b) {
   }
 }
 
+async function del(b) {
+  if (!window.confirm(t.value.confirmDeleteMsg.replace('{n}', b.name))) return
+  try {
+    await appApi('qwenpaw/api/backups/delete', { method: 'POST', body: { ids: [b.id] } })
+    toast('ok', t.value.deleteDone)
+    load()
+  } catch (e) {
+    toast('err', e.message)
+  }
+}
+
 onMounted(load)
 </script>
 
@@ -82,6 +93,7 @@ onMounted(load)
         <div class="kv" v-if="b.description"><span>{{ t.snapDesc }}</span><span style="font-weight:400">{{ b.description }}</span></div>
         <div class="srow">
           <button class="act" @click="restore(b)"><IconRotate />{{ t.restore }}</button>
+          <button class="act danger" @click="del(b)"><IconTrash />{{ t.del }}</button>
         </div>
       </ItemCard>
     </div>
