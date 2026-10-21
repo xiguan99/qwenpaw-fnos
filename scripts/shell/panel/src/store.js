@@ -3,7 +3,7 @@ import { reactive } from 'vue'
 export const store = reactive({
   status: null,
   online: false,
-  tab: 'app',
+  tab: 'overview',
   lang: localStorage.getItem('qwp_lang') || (String(navigator.language).toLowerCase().startsWith('zh') ? 'zh' : 'en'),
   theme: localStorage.getItem('qwp_theme') || 'auto',
   toast: null,
@@ -92,7 +92,7 @@ export async function appApi(path, opts = {}) {
   return j
 }
 
-export const TABS = ['app', 'overview', 'update', 'plugins', 'workspaces', 'models', 'snapshots', 'settings', 'logs', 'control']
+export const TABS = ['overview', 'update', 'plugins', 'workspaces', 'models', 'snapshots', 'settings', 'logs', 'control']
 
 export function setTab(t) {
   store.tab = t
