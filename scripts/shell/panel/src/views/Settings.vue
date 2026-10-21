@@ -22,10 +22,10 @@ async function load() {
     const [c, l, z, th, a, gate] = await Promise.all([
       appApi('qwenpaw/api/config/channels'),
       appApi('qwenpaw/api/settings/language'),
-      appApi('qwenpaw/api/settings/timezone'),
+      appApi('qwenpaw/api/config/user-timezone'),
       appApi('qwenpaw/api/config/theme'),
       appApi('qwenpaw/api/agents'),
-      appApi('config'),
+      appApi('shell/api/config'),
     ])
     cfg.value = c; lang.value = l; tz.value = z; theme.value = th; agents.value = a
     pwSet.value = !!(gate && gate.config && gate.config.access_password_set)
@@ -40,7 +40,7 @@ onMounted(load)
 async function savePwd() {
   pwBusy.value = true
   try {
-    const r = await appApi('config', { method: 'POST', body: { access_password: pwInput.value } })
+    const r = await appApi('shell/api/config', { method: 'POST', body: { access_password: pwInput.value } })
     if (r && r.ok) {
       toast('ok', pwInput.value ? t.value.apSaved : t.value.apCleared)
       pwInput.value = ''

@@ -73,7 +73,7 @@ export async function appApi(path, opts = {}) {
   // qwenpaw 官方 API：相对路径 'qwenpaw/api/…'，单包/双 app 两种模式都经壳反代直达本体
   const r = await fetch(path, {
     method: opts.method || 'GET',
-    headers: opts.body ? { 'Content-Type': 'application/json' } : {},
+    headers: { ...(opts.body ? { 'Content-Type': 'application/json' } : {}), ...(opts.headers || {}) },
     body: opts.body ? JSON.stringify(opts.body) : undefined,
   })
   let j = null

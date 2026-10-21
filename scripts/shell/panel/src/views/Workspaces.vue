@@ -1,17 +1,35 @@
 <script setup>
 import { ref, onMounted } from 'vue'
-import { appApi, fmtBytes, toast } from '../store'
+import { appApi, toast } from '../store'
 import { useT } from '../i18n'
 import PageTitle from '../components/PageTitle.vue'
-import ItemCard from '../components/ItemCard.vue'
-import { Refresh as IconRefresh, Folder as IconFolder, File as IconFile, ChevronLeft as IconChevronLeft, ChevronRight as IconChevronRight, ExternalLink as IconExternalLink } from '@vicons/tabler'
+import { Refresh as IconRefresh, Folder as IconFolder, File as IconFile, ChevronLeft as IconChevronLeft, ChevronRight as IconChevronRight } from '@vicons/tabler'
 
 const t = useT()
+const browse = ref(false)
+const agents = ref([])
 const dir = ref('')
 const entries = ref(null)
 const busy = ref(false)
-const models = ref(null)
-const busyM = ref(false)
+
+async function loadAgents() {
+  try {
+    const j = await appApi('qwenpaw/api/agents')
+    const list = j.agents || []
+    agents.value = await Promise.all(list.map(async (a) => {
+      let chats = []
+      try {
+        const c = await appApi('qwenpaw/api/chats', { headers: { 'X-Agent-Id': a.id } })
+        chats = Array.isArray(c) ? c : (c.chats || c.items || [])
+      } catch (e) {}
+      const up = chats.map((c) => c.updated_at).filter(Boolean).sort()
+      const cr = chats.map((c) => c.created_at).filter(Boolean).sort()
+      return { ...a, n: chats.length, updated: up[up.length - 1] || null, created: cr[0] || null }
+    }))
+  } catch (e) {
+    toast('err', t.value.loadFail + ': ' + e.message)
+  }
+}
 
 async function load() {
   if (busy.value) return
@@ -27,17 +45,9 @@ async function load() {
   }
 }
 
-async function loadModels() {
-  if (busyM.value) return
-  busyM.value = true
-  try {
-    models.value = await appApi('qwenpaw/api/models')
-  } catch (e) {
-    models.value = []
-    toast('err', t.value.loadFail + ': ' + e.message)
-  } finally {
-    busyM.value = false
-  }
+function showBrowse() {
+  browse.value = !browse.value
+  if (browse.value && entries.value === null) load()
 }
 
 function open(e) {
@@ -52,16 +62,22 @@ function up() {
   load()
 }
 const crumbs = () => dir.value.split('/').filter(Boolean)
-onMounted(() => {
-  load()
-  loadModels()
-})
+function fmtTime(iso) {
+  if (!iso) return '—'
+  const d = new Date(iso)
+  return isNaN(d.getTime()) ? '—' : d.toLocaleString()
+}
+onMounted(loadAgents)
 </script>
 
 <template>
   <div class="vw">
-    <PageTitle :title="t.tab_workspaces" />
-    <div class="wbox">
+    <PageTitle :title="t.tab_workspaces">
+      <span class="cnt">{{ t.wsTotal.replace('{n}', agents.length) }}</span>
+      <button class="act" @click="showBrowse">{{ t.wsDataDir }}</button>
+    </PageTitle>
+
+    <div v-if="browse" class="wbox">
       <div class="wbar">
         <button class="act" :disabled="!dir" @click="up"><IconChevronLeft /></button>
         <button class="act" @click="dir = ''; load()">{{ t.wsRoot }}</button>
@@ -76,30 +92,40 @@ onMounted(() => {
           <span class="wi"><IconFolder v-if="e.kind === 'directory'" /><IconFile v-else /></span>
           <span class="wn">{{ e.name }}</span>
           <span class="wm">{{ (e.modified_at || '').replace('T', ' ').replace(/(\+|Z).*$/, ' UTC') }}</span>
-          <span class="ws">{{ e.kind === 'directory' ? '' : fmtBytes(e.size) }}</span>
         </div>
         <div v-if="entries && !entries.length" class="hint">{{ t.wsEmpty }}</div>
       </div>
     </div>
 
-    <div class="sec" style="margin-top:18px">{{ t.tab_modelssec }}</div>
-    <div class="grid">
-      <ItemCard v-for="p in models || []" :key="p.id" :title="p.name" :badge-ok="!!p.enabled">
-        <template #side><span class="mid">{{ p.id }}</span></template>
-        <div class="kv"><span>{{ t.mStatus }}</span><span :class="p.enabled ? 'ok-t' : 'bad-t'">{{ p.enabled ? t.mEnabled : t.mDisabled }}</span></div>
-        <div class="kv"><span>{{ t.mModels }}</span><span>{{ p.model_count == null ? t.mNotQuery : p.model_count }}</span></div>
-        <div class="kv"><span>{{ t.mChat }}</span><span>{{ p.chat_model || '—' }}</span></div>
-        <div class="kv" v-if="p.base_url"><span>Base URL</span><span class="mono-s">{{ p.base_url }}</span></div>
-      </ItemCard>
-    </div>
-    <div class="hint" style="margin-top:10px">
-      <IconExternalLink style="vertical-align:-2px" /> {{ t.mEditHint }}
-      <a href="qwenpaw/#/settings" target="_blank" rel="noopener" class="lnk">{{ t.openApp }}</a>
+    <div v-else class="wgrid">
+      <div v-for="a in agents" :key="a.id" class="wcard">
+        <div class="whd">
+          <span class="wi"><IconFolder /></span>
+          <span class="wn">{{ a.name }}</span>
+          <span class="wns">{{ t.wsSessions.replace('{n}', a.n) }}</span>
+        </div>
+        <div class="wpath">{{ a.workspace_dir }}</div>
+        <div class="wfoot">
+          <span>{{ t.wsUpdated }} {{ fmtTime(a.updated) }}</span>
+          <span>{{ t.wsCreated }} {{ fmtTime(a.created) }}</span>
+        </div>
+      </div>
+      <div v-if="!agents.length" class="hint">{{ t.wsEmpty }}</div>
     </div>
   </div>
 </template>
 
 <style scoped>
+.cnt { color: var(--tx2); font-weight: 400; font-size: 13px; }
+.wgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; align-content: start; }
+.wcard { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; }
+.whd { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.whd .wn { font-weight: 600; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.whd .wi { display: inline-flex; color: var(--warn); flex: none; }
+.whd .wi svg { width: 18px; height: 18px; }
+.wns { margin-left: auto; color: var(--accent); font-size: 13px; white-space: nowrap; }
+.wpath { font-family: var(--mono); font-size: 12px; color: var(--tx2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wfoot { display: flex; gap: 16px; color: var(--tx2); font-size: 12px; flex-wrap: wrap; }
 .wbox { display: flex; flex-direction: column; min-height: 0; flex: 1; background: var(--card); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
 .wbar { display: flex; align-items: center; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
 button.crumb { border: none; background: none; padding: 4px 6px; font-size: 13px; color: var(--tx); cursor: pointer; }
@@ -109,15 +135,9 @@ button.crumb { border: none; background: none; padding: 4px 6px; font-size: 13px
 .dirrow { cursor: pointer; }
 .dirrow:hover { background: rgba(0,0,0,0.03); }
 html[data-theme='dark'] .dirrow:hover { background: rgba(255,255,255,0.04); }
-.wi { display: inline-flex; color: var(--tx2); flex: none; }
+.wlist .wi { display: inline-flex; color: var(--tx2); flex: none; }
 .dirrow .wi { color: var(--warn); }
-.wn { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wlist .wn { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wm { color: var(--tx2); font-size: 12px; white-space: nowrap; }
-.ws { color: var(--tx2); font-size: 12px; min-width: 70px; text-align: right; white-space: nowrap; }
-.mid { font-size: 11.5px; color: var(--tx2); font-family: var(--mono); }
-.mono-s { font-family: var(--mono); font-size: 12px; }
-.ok-t { color: var(--ok); }
-.bad-t { color: var(--bad); }
-.lnk { color: var(--accent); }
 @media (max-width: 700px) { .wm { display: none; } }
 </style>
