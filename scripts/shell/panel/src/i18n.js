@@ -153,6 +153,12 @@ const DICT = {
   setAgCount: ['数量', 'Count'],
   setEdit: ['修改设置', 'Edit settings'],
   setHint: ['设置项的修改在应用内进行：', 'Settings are edited in the app:'],
+  setAccessPwd: ['访问密码', 'Access Password'],
+  apKeepBlank: ['留空则不启用密码保护', 'Leave blank to disable password protection'],
+  apSave: ['保存', 'Save'],
+  apSaved: ['访问密码已设置', 'Access password set'],
+  apCleared: ['访问密码已清除', 'Access password cleared'],
+  apAlreadySet: ['已设置访问密码', 'Access password is set'],
 }
 
 export function dict() {

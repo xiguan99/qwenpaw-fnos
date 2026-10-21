@@ -23,7 +23,7 @@ chkcode() { # chkcode 名称 期望码 curl参数...
   [ "$code" = "$want" ] && { echo "  PASS $name (HTTP $code)"; PASS=$((PASS+1)); } \
     || { echo "  FAIL $name (want $want got ${code:-000})"; cat "$T/_c.out" 2>/dev/null | head -c 200; echo; FAIL=$((FAIL+1)); }
 }
-mkdir -p "$T/cmd" "$T/state"
+mkdir -p "$T/cmd" "$T/state" "$T/data"
 
 echo "[1] stub cmd/main（不得 exec 真实生产 main）..."
 cat > "$T/cmd/main" <<'STUB'
@@ -32,13 +32,12 @@ echo "{\"stub\":true,\"action\":\"$1\"}"
 STUB
 chmod +x "$T/cmd/main"
 
-echo "[2] sed 测试数据绝对路径（先修后起，上次就是没修写进了生产 history.db）..."
-sed -i 's|/vol1/@appdata/qwenpaw_yuexps/data|/tmp/qptest/data|g' "$T/data/.qwenpaw/config.json"
-grep -c '/tmp/qptest/data' "$T/data/.qwenpaw/config.json"
+echo "[2] 测试数据自生成（HOME 注入，backend 首启自建配置）..."
 
-echo "[3] 起 backend 22791（venv 已装齐依赖）..."
+echo "[3] 起 backend 22791（venv=装机版主包只读引用）..."
+VENV=/vol1/@appdata/qwenpaw/venv
 export HOME="$T/data"
-"$T/venv/bin/python" -m qwenpaw app --host 127.0.0.1 --port 22791 >> "$T/app.log" 2>&1 &
+"$VENV/bin/python" -m qwenpaw app --host 127.0.0.1 --port 22791 >> "$T/app.log" 2>&1 &
 APPPID=$!
 echo "backend pid=$APPPID"
 
@@ -75,7 +74,7 @@ echo "─── [6] 路由验证集"
 curl -s --max-time 8 "http://127.0.0.1:2279/" -o "$T/v_root.html"; chk "A 直连根=本体（direct）" "$APP_MARK" "$T/v_root.html" "GET / 直通反代"
 curl -s --max-time 8 "http://127.0.0.1:2279/qwenpaw/" -o "$T/v_app.html"; chk "B /qwenpaw/=本体HTML" "$APP_MARK" "$T/v_app.html" "iframe 命名空间剥段反代"
 curl -s --max-time 8 --unix-socket "$T/test.sock" "http://localhost/app/qwenpaw/" -o "$T/v_gw.html"; chk "C UDS prefix=本体+桥接注入" 'base href="/app/qwenpaw/"' "$T/v_gw.html" "fnOS 网关路径注入验证"
-GASSET=$(grep -o 'assets/index-[A-Za-z0-9_-]*\.js' "$T/venv/lib/python3.12/site-packages/qwenpaw/console/index.html" | head -1)
+GASSET=$(grep -o 'assets/index-[A-Za-z0-9_-]*\.js' "$VENV/lib/python3.12/site-packages/qwenpaw/console/index.html" | head -1)
 chkcode "D 网关前缀 asset=官方JS" 200 --unix-socket "$T/test.sock" "http://localhost/app/qwenpaw/${GASSET}"
 chkcode "E status API JSON" 200 "http://127.0.0.1:2279/shell/api/status"; chk "E2 status 字段" '"backend"' "$T/_c.out" "status_json"
 grep -o '"shell":{[^}]*' "$T/_c.out" | head -1; grep -o '"backend":{[^}]*' "$T/_c.out" | head -1; grep -o '"auth":{[^}]*' "$T/_c.out" | head -1

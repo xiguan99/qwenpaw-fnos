@@ -3,7 +3,7 @@ import { ref, onMounted, computed } from 'vue'
 import { appApi, toast } from '../store'
 import { useT } from '../i18n'
 import PageTitle from '../components/PageTitle.vue'
-import { Refresh as IconRefresh, ExternalLink as IconExternalLink, Messages as IconMessages } from '@vicons/tabler'
+import { Refresh as IconRefresh, ExternalLink as IconExternalLink, Messages as IconMessages, Lock as IconLock } from '@vicons/tabler'
 
 const t = useT()
 const cfg = ref(null)
@@ -12,18 +12,23 @@ const tz = ref(null)
 const theme = ref(null)
 const agents = ref(null)
 const busy = ref(false)
+const pwSet = ref(false)
+const pwInput = ref('')
+const pwBusy = ref(false)
 
 async function load() {
   busy.value = true
   try {
-    const [c, l, z, th, a] = await Promise.all([
+    const [c, l, z, th, a, gate] = await Promise.all([
       appApi('qwenpaw/api/config/channels'),
       appApi('qwenpaw/api/settings/language'),
       appApi('qwenpaw/api/settings/timezone'),
       appApi('qwenpaw/api/config/theme'),
       appApi('qwenpaw/api/agents'),
+      appApi('config'),
     ])
     cfg.value = c; lang.value = l; tz.value = z; theme.value = th; agents.value = a
+    pwSet.value = !!(gate && gate.config && gate.config.access_password_set)
   } catch (e) {
     toast('err', t.value.loadFail + ': ' + e.message)
   } finally {
@@ -31,6 +36,18 @@ async function load() {
   }
 }
 onMounted(load)
+
+async function savePwd() {
+  pwBusy.value = true
+  try {
+    const r = await appApi('config', { method: 'POST', body: { access_password: pwInput.value } })
+    if (r && r.ok) {
+      toast('ok', pwInput.value ? t.value.apSaved : t.value.apCleared)
+      pwInput.value = ''
+      await load()
+    } else toast('err', (r && r.error) || 'fail')
+  } catch (e) { toast('err', e.message) } finally { pwBusy.value = false }
+}
 
 const channels = computed(() => {
   const c = cfg.value || {}
@@ -62,6 +79,13 @@ const agentList = computed(() => (agents.value && agents.value.agents) || [])
       <div class="hd"><span>{{ t.setAgents }}</span></div>
       <div class="kv"><span>{{ t.setAgCount }}</span><span>{{ agentList.length }}</span></div>
       <div class="kv" v-for="a in agentList.slice(0, 6)" :key="a.id"><span>{{ a.id }}</span><span style="font-weight:400">{{ a.name || '—' }}</span></div>
+    </div>
+    <div class="card">
+      <div class="hd"><span><IconLock style="vertical-align:-2px" /> {{ t.setAccessPwd }}</span><span v-if="pwSet" class="badge-ok" style="margin-left:auto">{{ t.apAlreadySet }}</span></div>
+      <div class="row" style="display:flex;gap:8px;align-items:center;margin-top:6px">
+        <input v-model="pwInput" type="password" class="txt" :placeholder="t.apKeepBlank" style="flex:1" autocomplete="new-password" />
+        <button class="act primary" :disabled="pwBusy" @click="savePwd">{{ t.apSave }}</button>
+      </div>
     </div>
     <div class="card">
       <div class="hd"><span><IconExternalLink style="vertical-align:-2px" /> {{ t.setEdit }}</span></div>

@@ -19,7 +19,7 @@ fi
 [ -f "$ROOT/scripts/shell/panel/dist/index.html" ] || { echo "✗ 缺面板产物"; exit 1; }
 
 APP="$FP/app"
-mkdir -p "$APP/cmd" "$APP/ui/images"
+mkdir -p "$APP/ui/images"
 cp scripts/shell/fnshell.py "$APP/fnshell.py"
 # 官方技能授权机制：捆绑 trim-cli（脚本+linux-x64 二进制，与 fnOS 官方 skill 同款布局 scripts/ + bin/）
 mkdir -p "$APP/vendor/trim-cli/scripts" "$APP/vendor/trim-cli/bin"

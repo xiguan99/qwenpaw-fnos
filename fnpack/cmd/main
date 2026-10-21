@@ -24,12 +24,13 @@ PY_RUNTIME="/var/apps/python312/target/bin/python3"
 [ -x "${PY_RUNTIME}" ] || PY_RUNTIME="$(command -v python3 || true)"
 
 export HOME="${DATA_DIR}"
+export TRIM_CLI_PATH="${APP_DIR}/vendor/trim-cli/scripts/trim-cli"   # 官方技能授权（捆绑 trim-cli）
 export QWENPAW_PORT="2277"          # 对外端口：壳（fnshell 直通反代）监听，桌面图标（经网关+桥接）与浏览器直连都走它
 export QWENPAW_INTERNAL_PORT="22771"  # 本体内部端口，仅 127.0.0.1，由壳反代
 
 log_msg() { echo "$(date '+%Y-%m-%d %H:%M:%S') [INFO] $1" >> "${LOG_FILE}"; }
 log_err() { echo "$(date '+%Y-%m-%d %H:%M:%S') [ERROR] $1" >> "${LOG_FILE}"; }
-check_process() { kill -0 "$1" 2>/dev/null; }
+check_process() { ps -p "$1" >/dev/null 2>&1; }
 
 as_run_user() {
     # 以所选运行用户执行命令（root 时直接执行）
@@ -117,7 +118,7 @@ start_gateway() {
     pid=$!
     sleep 2
     if ! check_process "${pid}"; then
-        real=$(pgrep -f "fnshell.py --backend 127.0.0.1:${QWENPAW_INTERNAL_PORT}" | head -1)
+        real=$(pgrep -f "fnshell.py --backend 127.0.0.1:${QWENPAW_INTERNAL_PORT} --socket" | head -1)
         [ -n "${real}" ] && pid="${real}"
     fi
     if check_process "${pid}"; then
