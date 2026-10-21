@@ -21,6 +21,11 @@ fi
 APP="$FP/app"
 mkdir -p "$APP/cmd" "$APP/ui/images"
 cp scripts/shell/fnshell.py "$APP/fnshell.py"
+# 官方技能授权机制：捆绑 trim-cli（脚本+linux-x64 二进制，与 fnOS 官方 skill 同款布局 scripts/ + bin/）
+mkdir -p "$APP/vendor/trim-cli/scripts" "$APP/vendor/trim-cli/bin"
+cp scripts/vendor/trim-cli/scripts/trim-cli "$APP/vendor/trim-cli/scripts/"
+cp scripts/vendor/trim-cli/bin/trim-cli-linux-x64 "$APP/vendor/trim-cli/bin/"
+chmod +x "$APP/vendor/trim-cli/scripts/trim-cli" "$APP/vendor/trim-cli/bin/trim-cli-linux-x64"
 rm -rf "$APP/panel_dist"; cp -a scripts/shell/panel/dist "$APP/panel_dist"
 cp fnpack/app/ui/images/icon_256.png "$APP/ui/images/icon_256.png"
 cp fnpack/app/ui/images/icon_64.png "$APP/ui/images/icon_64.png"

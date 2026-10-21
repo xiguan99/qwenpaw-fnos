@@ -722,8 +722,9 @@ class ShellRuntime:
                        "restart-backend": "restart-backend"}
 
     def __init__(self, panel_root=None, cmd_dir=None, state_dir=None, public_port=None, default_backend=None,
-                 main_url=None, version_file=None, github_repo=None, direct=False):
+                 main_url=None, version_file=None, github_repo=None, direct=False, gateway_prefix=None):
         self.direct = direct  # 直通模式：根路径反代本体（图标/端口直达本体），不 serve 面板 UI，API 层保留
+        self.gateway_prefix = gateway_prefix or None
         self.panel_root = panel_root
         self.cmd_dir = cmd_dir
         self.state_dir = state_dir
@@ -1149,7 +1150,7 @@ class ShellRuntime:
             "python": {"venv": self.venv_python_version()},
             "app": {"version": os.environ.get("TRIM_APPVER"),
                     "port_public": self.public_port,
-                    "app_url": self.main_url or (self.prefix or None),
+                    "app_url": self.main_url or (self.gateway_prefix or None),
                     "backend": "%s:%d" % self.default_backend if self.default_backend else None,
                     "data_capped": dcapped},
             "data": {"path_basename": os.path.basename(data_dir) if data_dir else None,
@@ -1503,7 +1504,7 @@ def main():
     rt = ShellRuntime(panel_root=args.panel, cmd_dir=args.cmd_dir, state_dir=state_dir,
                       public_port=args.tcp, default_backend=(target_host, target_port),
                       main_url=args.main_url, version_file=args.version_file, github_repo=args.github_repo,
-                      direct=args.direct)
+                      direct=args.direct, gateway_prefix=args.prefix)
 
     def cleanup():
         if args.socket and os.path.exists(args.socket):

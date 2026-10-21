@@ -11,6 +11,7 @@ PY_RUNTIME="/var/apps/python312/target/bin/python3"
 PANEL_PORT="2278"                          # 对外端口（终态：面板 app 管理端口）
 MAIN_URL="http://127.0.0.1:2277"           # 主 app 入口（qwenpaw app 终态端口）
 GATEWAY_PREFIX="/app/qwenpaw-panel"
+export TRIM_CLI_PATH="${APP_DIR}/vendor/trim-cli/scripts/trim-cli"   # 官方技能授权（捆绑 trim-cli）
 
 log_msg() { echo "$(date '+%Y-%m-%d %H:%M:%S') [INFO] $1" >> "${LOG_FILE}"; }
 log_err() { echo "$(date '+%Y-%m-%d %H:%M:%S') [ERROR] $1" >> "${LOG_FILE}"; }
