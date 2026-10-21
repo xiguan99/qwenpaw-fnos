@@ -52,9 +52,9 @@ for i in $(seq 1 24); do
 done
 [ -z "$bok" ] && echo "  ⚠ backend 未就绪，后续 B 项可能失败"
 
-echo "[4] 起 fnshell（TCP 2279 + UDS + panel + stub cmd）..."
-$PY "$R/scripts/shell/fnshell.py" --tcp 2279 --backend 127.0.0.1:22791 --socket "$T/test.sock" \
-  --prefix /app/qwenpaw --panel "$DIST" --cmd-dir "$T/cmd" --state "$T/state" >> "$T/shell.log" 2>&1 &
+echo "[4] 起 fnshell（direct 模式：TCP 2279 + UDS + stub cmd，根路径直通本体）..."
+$PY "$R/scripts/shell/fnshell.py" --tcp 2279 --direct --backend 127.0.0.1:22791 --socket "$T/test.sock" \
+  --prefix /app/qwenpaw --cmd-dir "$T/cmd" --state "$T/state" >> "$T/shell.log" 2>&1 &
 SHELLPID=$!
 echo "shell pid=$SHELLPID"
 
@@ -72,11 +72,11 @@ if [ -z "$ok" ]; then
 fi
 
 echo "─── [6] 路由验证集"
-curl -s --max-time 8 "http://127.0.0.1:2279/" -o "$T/v_root.html"; chk "A 直连根=面板" "$PANEL_MARK" "$T/v_root.html" "GET /"
+curl -s --max-time 8 "http://127.0.0.1:2279/" -o "$T/v_root.html"; chk "A 直连根=本体（direct）" "$APP_MARK" "$T/v_root.html" "GET / 直通反代"
 curl -s --max-time 8 "http://127.0.0.1:2279/qwenpaw/" -o "$T/v_app.html"; chk "B /qwenpaw/=本体HTML" "$APP_MARK" "$T/v_app.html" "iframe 命名空间剥段反代"
-curl -s --max-time 8 --unix-socket "$T/test.sock" "http://localhost/app/qwenpaw/" -o "$T/v_gw.html"; chk "C UDS prefix=面板" "$PANEL_MARK" "$T/v_gw.html" "fnOS 网关路径"
-ASSET=$(grep -o 'assets/index-[A-Za-z0-9_-]*\.css' "$DIST/index.html" | head -1)
-chkcode "D panel 静态资源直出" 200 "http://127.0.0.1:2279/$ASSET"
+curl -s --max-time 8 --unix-socket "$T/test.sock" "http://localhost/app/qwenpaw/" -o "$T/v_gw.html"; chk "C UDS prefix=本体+桥接注入" 'base href="/app/qwenpaw/"' "$T/v_gw.html" "fnOS 网关路径注入验证"
+GASSET=$(grep -o 'assets/index-[A-Za-z0-9_-]*\.js' "$T/venv/lib/python3.12/site-packages/qwenpaw/console/index.html" | head -1)
+chkcode "D 网关前缀 asset=官方JS" 200 --unix-socket "$T/test.sock" "http://localhost/app/qwenpaw/${GASSET}"
 chkcode "E status API JSON" 200 "http://127.0.0.1:2279/shell/api/status"; chk "E2 status 字段" '"backend"' "$T/_c.out" "status_json"
 grep -o '"shell":{[^}]*' "$T/_c.out" | head -1; grep -o '"backend":{[^}]*' "$T/_c.out" | head -1; grep -o '"auth":{[^}]*' "$T/_c.out" | head -1
 

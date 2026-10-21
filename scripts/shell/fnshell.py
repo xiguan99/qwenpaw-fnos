@@ -431,7 +431,7 @@ class FnShellHandler(BaseHTTPRequestHandler):
         rp = urlparse(req_path)
         path_only = rp.path
 
-        if rt.panel_root and (path_only == "/shell" or path_only.startswith("/shell/")):
+        if (rt.panel_root or rt.direct) and (path_only == "/shell" or path_only.startswith("/shell/")):
             rt.handle_api(self, path_only, rp.query)  # 鉴权在 API 内
             return
         if rt.panel_root and rt.resolve_static(path_only):
@@ -721,7 +721,8 @@ class ShellRuntime:
                        "restart-backend": "restart-backend"}
 
     def __init__(self, panel_root=None, cmd_dir=None, state_dir=None, public_port=None, default_backend=None,
-                 main_url=None, version_file=None, github_repo=None):
+                 main_url=None, version_file=None, github_repo=None, direct=False):
+        self.direct = direct  # 直通模式：根路径反代本体（图标/端口直达本体），不 serve 面板 UI，API 层保留
         self.panel_root = panel_root
         self.cmd_dir = cmd_dir
         self.state_dir = state_dir
@@ -1307,6 +1308,7 @@ def main():
     parser.add_argument("--main-url", type=str, default=None, help="面板模式：本体壳地址 http://127.0.0.1:PORT（状态聚合/日志中继/动作转发）")
     parser.add_argument("--version-file", type=str, default=None, help="检查更新用的 VERSION 文件路径")
     parser.add_argument("--github-repo", type=str, default=None, help="检查更新的 GitHub 仓库 owner/name")
+    parser.add_argument("--direct", action="store_true", help="直通模式：根路径反代本体（图标/端口直达），不 serve 面板 UI，API 层保留")
     args = parser.parse_args()
 
     backend = args.backend or args.listen
@@ -1319,7 +1321,8 @@ def main():
     state_dir = args.state or os.environ.get("TRIM_PKGVAR") or None
     rt = ShellRuntime(panel_root=args.panel, cmd_dir=args.cmd_dir, state_dir=state_dir,
                       public_port=args.tcp, default_backend=(target_host, target_port),
-                      main_url=args.main_url, version_file=args.version_file, github_repo=args.github_repo)
+                      main_url=args.main_url, version_file=args.version_file, github_repo=args.github_repo,
+                      direct=args.direct)
 
     def cleanup():
         if args.socket and os.path.exists(args.socket):

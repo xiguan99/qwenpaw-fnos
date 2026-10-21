@@ -44,8 +44,7 @@ ls -la "$APP/wheels"
 # ── 4) 运行时树组装 ──
 echo "[4/5] 组装 fnpack/app ..."
 cp scripts/shell/fnshell.py "$APP/fnshell.py"
-[ -d scripts/shell/panel/dist ] || { echo "✗ 缺面板产物 scripts/shell/panel/dist（先 npm run build）"; exit 1; }
-cp -a scripts/shell/panel/dist "$APP/panel_dist"
+# 双 app 返工（2026-10-21）：主包 direct 直通本体，不再捆绑面板（面板=独立 app，见 build-panel.sh）
 # 图标：上游官方资产 288×288 RGBA → 256/64（NAS 无 PIL，ffmpeg lanczos）
 SRC_ICON="$STAGE/console/public/qwenpaw.png"
 [ -f "$SRC_ICON" ] || SRC_ICON="console/public/qwenpaw.png"

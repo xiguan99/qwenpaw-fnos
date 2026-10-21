@@ -1,0 +1,83 @@
+#!/bin/bash
+# qwenpaw-panel 生命周期入口：单进程 fnshell（面板静态 serve + 反代主 app + 网关 socket）
+# 面板 app 自身无后端；服务控制按钮经 main_url 转发到主 app 壳（主 app cmd 执行）
+LOG_FILE="${TRIM_PKGVAR}/gateway.log"
+PID_FILE="${TRIM_PKGVAR}/app.pid"
+APP_DIR="${TRIM_APPDEST}"
+
+PY_RUNTIME="/var/apps/python312/target/bin/python3"
+[ -x "${PY_RUNTIME}" ] || PY_RUNTIME="$(command -v python3 || true)"
+
+PANEL_PORT="2278"                          # 对外端口（终态：面板 app 管理端口）
+MAIN_URL="http://127.0.0.1:2277"           # 主 app 入口（qwenpaw app 终态端口）
+GATEWAY_PREFIX="/app/qwenpaw-panel"
+
+log_msg() { echo "$(date '+%Y-%m-%d %H:%M:%S') [INFO] $1" >> "${LOG_FILE}"; }
+log_err() { echo "$(date '+%Y-%m-%d %H:%M:%S') [ERROR] $1" >> "${LOG_FILE}"; }
+check_process() { kill -0 "$1" 2>/dev/null; }
+
+status() {
+    if [ -f "${PID_FILE}" ]; then
+        pid=$(head -n 1 "${PID_FILE}" | tr -d '[:space:]')
+        if check_process "${pid}"; then return 0; else rm -f "${PID_FILE}"; fi
+    fi
+    return 1
+}
+
+start_process() {
+    status && return 0
+    [ -x "${PY_RUNTIME}" ] || { log_err "python312 套件未找到"; return 1; }
+    [ -f "${APP_DIR}/fnshell.py" ] || { log_err "找不到 ${APP_DIR}/fnshell.py"; return 1; }
+    [ -d "${APP_DIR}/panel_dist" ] || { log_err "找不到 ${APP_DIR}/panel_dist"; return 1; }
+    log_msg "启动 fnshell (tcp ${PANEL_PORT}, backend ${MAIN_URL#http://}, panel ${APP_DIR}/panel_dist)"
+    as_run_user "exec '${PY_RUNTIME}' '${APP_DIR}/fnshell.py' --backend '${MAIN_URL#http://}' --socket '${APP_DIR}/app.sock' --prefix '${GATEWAY_PREFIX}' --tcp ${PANEL_PORT} --panel '${APP_DIR}/panel_dist' --cmd-dir '${APP_DIR}/cmd' --state '${TRIM_PKGVAR}' --main-url '${MAIN_URL}' --github-repo xiguan99/qwenpaw-fnos >> '${LOG_FILE}' 2>&1 & echo \$!" &
+    pid=$!
+    sleep 2
+    if ! check_process "${pid}"; then
+        real=$(pgrep -f "fnshell.py --backend ${MAIN_URL#http://}" | head -1)
+        [ -n "${real}" ] && pid="${real}"
+    fi
+    if check_process "${pid}"; then
+        printf "%s" "${pid}" > "${PID_FILE}"
+        log_msg "fnshell 启动成功 PID=${pid}"
+    else
+        log_err "fnshell 启动失败（见 ${LOG_FILE}）"
+        return 1
+    fi
+}
+
+stop_process() {
+    log_msg "停止 fnshell"
+    if [ -f "${PID_FILE}" ]; then
+        pid=$(head -n 1 "${PID_FILE}" | tr -d '[:space:]')
+        if check_process "${pid}"; then
+            kill -TERM "${pid}" 2>/dev/null
+            count=0
+            while check_process "${pid}" && [ $count -lt 5 ]; do sleep 1; count=$((count+1)); done
+            check_process "${pid}" && { log_err "5 秒未退出，SIGKILL"; kill -KILL "${pid}" 2>/dev/null || true; }
+        fi
+        rm -f "${PID_FILE}"
+    fi
+    pkill -9 -f "fnshell.py --backend 127.0.0.1:${MAIN_PORT:-2277}" 2>/dev/null || true
+    log_msg "已停止"
+    return 0
+}
+
+RUN_USER="${wizard_run_user:-root}"
+as_run_user() {
+    if [ "${RUN_USER}" != "root" ] && id "${RUN_USER}" >/dev/null 2>&1; then
+        su -s /bin/bash "${RUN_USER}" -c "$1"
+    else
+        bash -c "$1"
+    fi
+}
+
+case $1 in
+start)            start_process ;;
+stop)             stop_process ;;
+status)           status && exit 0 || exit 3 ;;
+start-backend)    start_process ;;
+stop-backend)     stop_process ;;
+restart-backend)  stop_process; start_process ;;
+*)                exit 1 ;;
+esac

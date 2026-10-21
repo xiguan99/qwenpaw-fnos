@@ -3,8 +3,7 @@ import { ref } from 'vue'
 import { ChevronDown as IconChevronDown } from '@vicons/tabler'
 
 const props = defineProps({ title: String, badge: String, badgeOk: Boolean, clickable: Boolean })
-const isMobile = window.matchMedia && window.matchMedia('(max-width: 700px)').matches
-const open = ref(!isMobile)
+const open = ref(true)
 </script>
 
 <template>
