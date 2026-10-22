@@ -40,6 +40,49 @@ async function checkUpdate() {
   }
 }
 
+const official = computed(() => (checked.value && checked.value.official) || null)
+const applyState = computed(() => (official.value && official.value.apply_state) || null)
+let pollTimer = null
+
+async function applyOfficial() {
+  if (!official.value || !official.value.has_update || busy.value) return
+  if (!window.confirm(t.value.confirmUpgradeOfficial)) return
+  busy.value = true
+  try {
+    const r = await apiPost('official-apply', { confirm: true })
+    if (r && r.ok) {
+      toast('ok', t.value.upgradeStarted)
+      startPoll()
+    } else toast('err', (r && r.error) || 'fail')
+  } catch (e) {
+    toast('err', e.message || 'fail')
+  } finally {
+    busy.value = false
+  }
+}
+
+function startPoll() {
+  if (pollTimer) clearTimeout(pollTimer)
+  pollTimer = setTimeout(async () => {
+    try {
+      const r = await apiGet('official-check')
+      checked.value = { ...(checked.value || {}), official: r }
+      const s = r && r.apply_state
+      if (s && s.state === 'done') {
+        toast('ok', t.value.upgradeDone + ': ' + (s.target || ''))
+        try { await apiPost('service', { action: 'restart-backend' }) } catch (e) { /* ignore */ }
+        refreshStatus()
+      } else if (s && s.state === 'failed') {
+        toast('err', t.value.upgradeFailed)
+      } else {
+        startPoll()
+      }
+    } catch (e) {
+      startPoll()
+    }
+  }, 5000)
+}
+
 async function quickSnap() {
   if (busy.value) return
   busy.value = true
@@ -102,9 +145,18 @@ const appUrl = computed(() => (st.value.app && st.value.app.app_url) || null)
     </div>
 
     <div class="hint" style="margin-top:16px" v-if="checked">
-      {{ t.checkResult }}: {{ t.curVer }} {{ checked.current || '?' }} · {{ t.latestVer }} {{ checked.latest || '?' }}
-      <template v-if="checked.published_at"> · {{ t.publishedAt }} {{ String(checked.published_at).slice(0, 10) }}</template>
-      <a v-if="checked.url" :href="checked.url" target="_blank" rel="noopener" class="lnk">{{ t.openRelease }}</a>
+      <div>{{ t.projCh }}: {{ t.curVer }} {{ checked.current || '?' }} · {{ t.latestVer }} {{ checked.latest || '?' }}
+        <template v-if="checked.published_at"> · {{ t.publishedAt }} {{ String(checked.published_at).slice(0, 10) }}</template>
+        <a v-if="checked.url" :href="checked.url" target="_blank" rel="noopener" class="lnk">{{ t.openRelease }}</a>
+      </div>
+      <div v-if="official" class="hintrow">
+        {{ t.officialCh }}: {{ t.curVer }} {{ official.current || '?' }} · {{ t.latestVer }} {{ official.latest || '?' }}
+        <a v-if="official.has_update" class="lnk pointer" @click="applyOfficial">{{ t.clickUpgrade }}</a>
+        <span v-if="applyState && applyState.state === 'running'">· {{ t.upgradeRunning }}</span>
+        <span v-else-if="applyState && applyState.state === 'done'">· {{ t.upgradeDone }}</span>
+        <span v-else-if="applyState && applyState.state === 'failed'">· {{ t.upgradeFailed }}</span>
+        <a :href="official.url" target="_blank" rel="noopener" class="lnk">PyPI</a>
+      </div>
     </div>
   </div>
 </template>
@@ -112,4 +164,6 @@ const appUrl = computed(() => (st.value.app && st.value.app.app_url) || null)
 <style scoped>
 .ovwrap { display: flex; flex-direction: column; min-height: 0; flex: 1; overflow-y: auto; }
 .lnk { color: var(--accent); }
+.hintrow { margin-top: 6px; }
+.pointer { cursor: pointer; }
 </style>

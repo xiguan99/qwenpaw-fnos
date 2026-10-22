@@ -11,6 +11,7 @@ UDS（飞牛网关 socket）+ TCP 对外端口双监听，统一路由：
 import os
 import re
 import sys
+import glob
 import gzip
 import json
 import time
@@ -700,6 +701,16 @@ class FnShellHandler(BaseHTTPRequestHandler):
 # 壳运行时：面板静态站 + 管理 API + 鉴权（UDS/TCP 双监听共享）
 # ============================================================================
 
+# 官方更新通道（PyPI qwenpaw）：检查链路 加速源 → 回退源 → 官方直连（实测 2026-10-22：TUNA 0.5s / aliyun 0.5s / 官方直连超时）
+OFFICIAL_PKG = "qwenpaw"
+PYPI_JSON_CHAIN = ["https://mirrors.tuna.tsinghua.edu.cn/pypi/web/json/{pkg}",
+                   "https://mirrors.aliyun.com/pypi/web/json/{pkg}",
+                   "https://pypi.org/pypi/{pkg}/json"]
+PYPI_SIMPLE_CHAIN = ["https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple",
+                     "https://mirrors.aliyun.com/pypi/simple",
+                     "https://pypi.org/simple"]
+PIP_TIMEOUT = 900  # pip 子进程上限（官方小补丁 wheel 一般几十 MB）
+
 PANEL_PREFIX = ("/assets/", "/icons/", "/fonts/")
 COOKIE_NAME = "qwp_shell"
 SESSION_TTL = 30 * 24 * 3600
@@ -792,36 +803,157 @@ class ShellRuntime:
         return merged
 
     def check_update(self, handler):
-        if self.main_url:  # 面板模式：查的是本体的更新（本体 VERSION 才准）
-            self.forward_main_json(handler, "check-update")
-            return
-        if not self.github_repo:
-            self.json_out(handler, 200, {"ok": False, "error": "no_repo_configured"})
+        # 双通道：project = 我们仓库的 GitHub releases；official = PyPI 官方链路（加速源→回退→直连）
+        # 顶层投影 = 项目通道（旧 UI 兼容）；official 子对象供新 UI；官方通道本身不过 60s 缓存（UI 轮询 official-check）
+        if self.main_url:
+            out = self._channel_github(self.github_repo)
+            out["official"] = self._channel_official()
+            self._update_cache = (time.time(), out)
+            self.json_out(handler, 200, out)
             return
         ts, cached = self._update_cache
         if cached and time.time() - ts < 60:
             self.json_out(handler, 200, cached)
             return
-        cur = os.environ.get("TRIM_APPVER")  # fnOS 注入（生产主路径）；测试/开发回退 VERSION 文件
+        out = self._channel_github(self.github_repo)
+        out["official"] = self._channel_official()
+        self._update_cache = (time.time(), out)
+        self.json_out(handler, 200, out)
+
+    def official_check(self, handler):
+        self.json_out(handler, 200, {"ok": True, **self._channel_official()})
+
+    def _channel_github(self, repo, cur=None):
+        if not cur:
+            cur = os.environ.get("TRIM_APPVER")  # fnOS 注入（生产主路径）；测试/开发回退 VERSION 文件
         if not cur:
             try:
                 with open(self.version_file or "VERSION") as f:
                     cur = f.read().strip()
             except Exception:
                 pass
-        latest = self._http_json("https://api.github.com/repos/%s/releases/latest" % self.github_repo, timeout=8)
+        if not repo:
+            return {"ok": False, "error": "no_repo_configured", "current": cur}
+        latest = self._http_json("https://api.github.com/repos/%s/releases/latest" % repo, timeout=8)
         if latest is None:
-            self.json_out(handler, 200, {"ok": False, "error": "github_unreachable", "current": cur})
-            return
+            return {"ok": False, "error": "github_unreachable", "current": cur}
         latest_tag = str(latest.get("tag_name") or "").lstrip("v")
-        out = {"ok": True, "current": cur,
+        return {"ok": True, "current": cur,
                "latest": latest_tag or None,
                "has_update": bool(latest_tag) and bool(cur) and latest_tag != cur,
                "url": latest.get("html_url"),
                "published_at": latest.get("published_at"),
                "notes": (latest.get("body") or "")[:600]}
-        self._update_cache = (time.time(), out)
-        self.json_out(handler, 200, out)
+
+    # ---------- 官方更新通道（PyPI）：检查 + 点击升级（小补丁；大版本由我们决定是否打新 fpk） ----------
+    def main_pkgvar(self):
+        if not self.main_url:
+            return os.environ.get("TRIM_PKGVAR") or self.state_dir
+        return os.environ.get("TRIM_PKGVAR_MAIN") or os.path.join(os.path.dirname(self.state_dir or ""), "qwenpaw")
+
+    def _official_installed(self):
+        root = self.main_pkgvar()
+        if not root:
+            return None
+        for meta in glob.glob(os.path.join(root, "venv", "lib", "python3.*", "site-packages",
+                                           OFFICIAL_PKG + "-*.dist-info", "METADATA")):
+            try:
+                with open(meta) as f:
+                    for line in f:
+                        if line.startswith("Version:"):
+                            return line.split(":", 1)[1].strip()
+            except Exception:
+                pass
+        return None
+
+    def _pypi_latest(self):
+        for idx, tpl in enumerate(PYPI_JSON_CHAIN):
+            j = self._http_json(tpl.format(pkg=OFFICIAL_PKG), timeout=8)
+            if j and (j.get("info") or {}).get("version"):
+                return j["info"]["version"], idx
+        return None, None
+
+    def official_status_json(self):
+        # 本机口径（主 app 实例与单 app 模式可读自己 venv；面板模式由 main 侧提供）
+        return {"ok": True, "current": self._official_installed(), "apply_state": self._apply_state()}
+
+    def _official_view(self):
+        # 面板模式：venv 属主是主 app 用户，面板进程读不到 → 版本与 apply 状态经 HTTP 问主 app
+        if self.main_url:
+            j = self._http_json(self.main_url + "/shell/api/official-status", timeout=6)
+            if j and j.get("ok"):
+                return j.get("current"), j.get("apply_state")
+            return None, None  # 老版本主 app 无此路由：优雅降级（装新包后闭环）
+        return self._official_installed(), self._apply_state()
+
+    def _channel_official(self):
+        latest, idx = self._pypi_latest()
+        cur, apply_state = self._official_view()
+        return {"ok": latest is not None, "current": cur, "latest": latest,
+                "has_update": bool(latest) and bool(cur) and latest != cur,
+                "via": idx, "apply_state": apply_state,
+                "url": "https://pypi.org/project/%s/" % OFFICIAL_PKG}
+
+    def _apply_state(self):
+        try:
+            with open(os.path.join(self.state_dir or ".", "update_apply.json")) as f:
+                return json.load(f)
+        except Exception:
+            return None
+
+    def _save_apply_state(self, obj):
+        try:
+            with open(os.path.join(self.state_dir or ".", "update_apply.json"), "w") as f:
+                json.dump(obj, f, ensure_ascii=False)
+        except Exception:
+            pass
+
+    def official_apply(self, handler):
+        body = self.read_json(handler) or {}
+        if not body.get("confirm"):
+            self.json_out(handler, 400, {"ok": False, "error": "confirm_required"})
+            return
+        if self.main_url:
+            # venv/pip 属主是主 app 用户，面板进程无权跑 → 动作转发主 shell 执行（与 service 同模式）
+            r = self._http_json(self.main_url + "/shell/api/official-apply", method="POST", body=body)
+            if r is None:
+                self.json_out(handler, 502, {"ok": False, "error": "main_unreachable", "main": self.main_url})
+            else:
+                self.json_out(handler, 200, r)
+            return
+        latest, idx = self._pypi_latest()
+        if not latest:
+            self.json_out(handler, 502, {"ok": False, "error": "pypi_unreachable"})
+            return
+        root = self.main_pkgvar()
+        pip = os.path.join(root, "venv", "bin", "pip") if root else None
+        if not pip or not os.path.isfile(pip):
+            self.json_out(handler, 500, {"ok": False, "error": "pip_not_found"})
+            return
+        dry = os.environ.get("QWENPAW_OFFICIAL_DRY") == "1"
+        self._save_apply_state({"state": "running", "target": latest, "dry_run": dry,
+                                "started": time.strftime("%Y-%m-%d %H:%M:%S")})
+
+        def worker():
+            order = [PYPI_SIMPLE_CHAIN[idx]] + [u for i, u in enumerate(PYPI_SIMPLE_CHAIN) if i != idx]
+            for i, simple in enumerate(order):
+                cmd = [pip, "install", "--upgrade", "%s==%s" % (OFFICIAL_PKG, latest), "-i", simple, "--no-input"]
+                if dry:
+                    cmd.append("--dry-run")
+                try:
+                    r = subprocess.run(cmd, capture_output=True, text=True, timeout=PIP_TIMEOUT)
+                    if r.returncode == 0:
+                        self._save_apply_state({"state": "done", "target": latest, "via": simple, "dry_run": dry,
+                                                "mirror_try": i + 1,
+                                                "ended": time.strftime("%Y-%m-%d %H:%M:%S")})
+                        return
+                    logger.warning("official_apply pip 非零退出(%s): %s" % (simple, (r.stderr or "").strip()[-200:]))
+                except Exception as e:
+                    logger.warning("official_apply pip 失败(%s): %s" % (simple, e))
+            self._save_apply_state({"state": "failed", "target": latest, "dry_run": dry,
+                                    "ended": time.strftime("%Y-%m-%d %H:%M:%S")})
+        threading.Thread(target=worker, daemon=True).start()
+        self.json_out(handler, 200, {"ok": True, "state": "started", "target": latest, "dry_run": dry})
 
     def forward_main_json(self, handler, suffix, body=None):
         """面板模式 JSON 转发（service POST 体透传）。"""
@@ -937,6 +1069,14 @@ class ShellRuntime:
         if handler.command not in ("GET", "HEAD"):
             handler.send_error(405)
             return
+        pfx = handler.server.prefix
+        if path == "/" and pfx and handler.path == pfx:
+            # fnOS 图标打开的 URL 无尾斜杠：./assets/ 相对解析会丢一层（/app/assets → 网关 404）→ 301 补斜杠归位
+            handler.send_response(301)
+            handler.send_header("Location", pfx + "/")
+            handler.send_header("Content-Length", "0")
+            handler.end_headers()
+            return
         fpath = self.resolve_static(path)
         if not fpath:
             handler.send_error(404)
@@ -1033,6 +1173,19 @@ class ShellRuntime:
                     self.skill_auth_logout(handler)
                 else:
                     handler.send_error(405)
+        elif route == "official-check":
+            if self.require_auth(handler):
+                self.official_check(handler)
+        elif route == "official-status":
+            if self.require_auth(handler):
+                self.json_out(handler, 200, self.official_status_json())
+        elif route == "official-apply":
+            if not self.require_auth(handler):
+                pass
+            elif handler.command == "POST":
+                self.official_apply(handler)
+            else:
+                handler.send_error(405)
         elif route == "login":
             self.post_login(handler)  # 登录本身永远开放
         elif route == "logout":
@@ -1235,19 +1388,31 @@ class ShellRuntime:
                 return cand
         return None
 
+    def trim_cfg_dir(self):
+        # app 账户 $HOME 在 fnOS 托管下不可靠（目录可能不存在→trim-cli 写不进配置）；state 目录优先
+        root = self.state_dir or (os.environ.get("HOME") or "")
+        return os.path.join(root, ".config", "trim-cli") if root else None
+
     def trim_cli_env(self):
         env = dict(os.environ)
         home = os.environ.get("HOME") or ""
         env["HOME"] = home
-        env["TRIM_CLI_CONFIG_DIR"] = os.path.join(home, ".config", "trim-cli")
+        cfg = self.trim_cfg_dir()
+        if cfg:
+            try:
+                os.makedirs(cfg, exist_ok=True)
+            except Exception:
+                pass
+            env["TRIM_CLI_CONFIG_DIR"] = cfg
         return env
 
     def skill_auth_status(self):
         cli = self.trim_cli_path()
         if not cli:
             return {"authorized": False, "no_cli": True}
-        active = os.path.join(os.environ.get("HOME") or "", ".config", "trim-cli", "secure", "active.enc")
-        if not os.path.exists(active):
+        cfg = self.trim_cfg_dir()
+        active = os.path.join(cfg, "secure", "active.enc") if cfg else None
+        if not active or not os.path.exists(active):
             return {"authorized": False, "username": None}
         try:
             out = subprocess.run([cli, "user", "info"], env=self.trim_cli_env(),
