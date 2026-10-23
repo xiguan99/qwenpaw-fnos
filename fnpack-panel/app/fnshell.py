@@ -873,23 +873,61 @@ class ShellRuntime:
                 return j["info"]["version"], idx
         return None, None
 
+    def _runtime_version(self):
+        """本体自报版本（GET /api/version）。面板模式下 backend 指向主 app 入口，同样可问。"""
+        host, port = self.default_backend if self.default_backend else (None, None)
+        if not host or not port:
+            return None
+        j = self._http_json("http://%s:%d/api/version" % (host, port), timeout=4)
+        return (j or {}).get("version")
+
+    def _backend_ready(self, timeout=4):
+        host, port = self.default_backend if self.default_backend else (None, None)
+        if not host or not port:
+            return False
+        return self._http_json("http://%s:%d/api/version" % (host, port), timeout=timeout) is not None
+
+    def _restart_backend(self, wait=90):
+        """pip 升级后重启本体并等端口就绪——不重启则跑的还是旧代码（这正是"升级成功但进去还是老版本"的根因）。"""
+        cmd = os.path.join(self.cmd_dir or "", "main")
+        if not self.cmd_dir or not os.path.isfile(cmd):
+            logger.warning("official_apply: 找不到 cmd/main，无法重启本体")
+            return False
+        try:
+            r = subprocess.run([cmd, "restart-backend"], capture_output=True, text=True, timeout=180)
+            logger.info("official_apply restart-backend rc=%s out=%s" % (r.returncode, (r.stdout or "").strip()[-300:]))
+        except Exception as e:
+            logger.warning("official_apply restart-backend 异常: %s" % e)
+            return False
+        deadline = time.time() + wait
+        while time.time() < deadline:
+            time.sleep(2)
+            if self._backend_ready():
+                return True
+        logger.warning("official_apply: 重启后 %.0fs 内后端未就绪" % wait)
+        return False
+
     def official_status_json(self):
         # 本机口径（主 app 实例与单 app 模式可读自己 venv；面板模式由 main 侧提供）
-        return {"ok": True, "current": self._official_installed(), "apply_state": self._apply_state()}
+        # runtime = 本体自报版本（/api/version），用于和 dist-info 口径对照，消除"面板显示已是最新、进去还是老版本"的困惑
+        return {"ok": True, "current": self._official_installed(), "apply_state": self._apply_state(),
+                "runtime": self._runtime_version()}
 
     def _official_view(self):
         # 面板模式：venv 属主是主 app 用户，面板进程读不到 → 版本与 apply 状态经 HTTP 问主 app
         if self.main_url:
             j = self._http_json(self.main_url + "/shell/api/official-status", timeout=6)
             if j and j.get("ok"):
-                return j.get("current"), j.get("apply_state")
-            return None, None  # 老版本主 app 无此路由：优雅降级（装新包后闭环）
-        return self._official_installed(), self._apply_state()
+                return j.get("current"), j.get("apply_state"), j.get("runtime")
+            return None, None, None  # 老版本主 app 无此路由：优雅降级（装新包后闭环）
+        return self._official_installed(), self._apply_state(), self._runtime_version()
 
     def _channel_official(self):
         latest, idx = self._pypi_latest()
-        cur, apply_state = self._official_view()
-        return {"ok": latest is not None, "current": cur, "latest": latest,
+        cur, apply_state, runtime = self._official_view()
+        return {"ok": latest is not None, "current": cur, "latest": latest, "runtime": runtime,
+                # runtime_stale：venv 已升级但运行进程还是旧代码（重启前的真实状态）
+                "runtime_stale": bool(runtime) and bool(cur) and runtime != cur,
                 "has_update": bool(latest) and bool(cur) and latest != cur,
                 "via": idx, "apply_state": apply_state,
                 "url": "https://pypi.org/project/%s/" % OFFICIAL_PKG}
@@ -925,35 +963,60 @@ class ShellRuntime:
         if not latest:
             self.json_out(handler, 502, {"ok": False, "error": "pypi_unreachable"})
             return
+        # 复测/强制重装口子：target 指定目标版本（默认最新），force 允许同版本重装并照样重启
+        target = str(body.get("target") or "").strip() or latest
+        force = bool(body.get("force"))
         root = self.main_pkgvar()
         pip = os.path.join(root, "venv", "bin", "pip") if root else None
         if not pip or not os.path.isfile(pip):
             self.json_out(handler, 500, {"ok": False, "error": "pip_not_found"})
             return
+        cur = self._official_installed()
+        # 无更新直接短路：不跑 pip、不写 done（旧行为会跑一次同版本 no-op 然后误报"升级成功"）
+        if cur and target == cur and not force:
+            self._save_apply_state({"state": "up_to_date", "target": target, "current": cur,
+                                    "ended": time.strftime("%Y-%m-%d %H:%M:%S")})
+            self.json_out(handler, 200, {"ok": True, "state": "up_to_date", "current": cur,
+                                         "latest": latest, "target": target,
+                                         "message": "已是最新版本，无需升级"})
+            return
         dry = os.environ.get("QWENPAW_OFFICIAL_DRY") == "1"
-        self._save_apply_state({"state": "running", "target": latest, "dry_run": dry,
+        self._save_apply_state({"state": "running", "target": target, "from_version": cur, "dry_run": dry,
                                 "started": time.strftime("%Y-%m-%d %H:%M:%S")})
 
         def worker():
             order = [PYPI_SIMPLE_CHAIN[idx]] + [u for i, u in enumerate(PYPI_SIMPLE_CHAIN) if i != idx]
             for i, simple in enumerate(order):
-                cmd = [pip, "install", "--upgrade", "%s==%s" % (OFFICIAL_PKG, latest), "-i", simple, "--no-input"]
+                cmd = [pip, "install", "--upgrade", "%s==%s" % (OFFICIAL_PKG, target), "-i", simple, "--no-input"]
                 if dry:
                     cmd.append("--dry-run")
+                if force:
+                    cmd.append("--force-reinstall")
+                # 运维/测试开关：只升本体不解析依赖（依赖已齐时更快，也避免空环境拉全家桶）
+                if os.environ.get("QWENPAW_OFFICIAL_NODEPS") == "1":
+                    cmd.append("--no-deps")
                 try:
                     r = subprocess.run(cmd, capture_output=True, text=True, timeout=PIP_TIMEOUT)
                     if r.returncode == 0:
-                        self._save_apply_state({"state": "done", "target": latest, "via": simple, "dry_run": dry,
+                        # pip 成功≠生效：正在跑的进程还是旧代码，必须重启本体并等端口就绪
+                        restarted = False if dry else self._restart_backend()
+                        to_v = self._official_installed()
+                        self._save_apply_state({"state": "done", "target": target, "via": simple, "dry_run": dry,
+                                                "from_version": cur, "to_version": to_v,
+                                                "restarted": restarted, "runtime": self._runtime_version(),
                                                 "mirror_try": i + 1,
                                                 "ended": time.strftime("%Y-%m-%d %H:%M:%S")})
+                        logger.info("official_apply done: %s -> %s, restarted=%s, runtime=%s"
+                                    % (cur, to_v, restarted, self._runtime_version()))
                         return
                     logger.warning("official_apply pip 非零退出(%s): %s" % (simple, (r.stderr or "").strip()[-200:]))
                 except Exception as e:
                     logger.warning("official_apply pip 失败(%s): %s" % (simple, e))
-            self._save_apply_state({"state": "failed", "target": latest, "dry_run": dry,
+            self._save_apply_state({"state": "failed", "target": target, "from_version": cur, "dry_run": dry,
                                     "ended": time.strftime("%Y-%m-%d %H:%M:%S")})
         threading.Thread(target=worker, daemon=True).start()
-        self.json_out(handler, 200, {"ok": True, "state": "started", "target": latest, "dry_run": dry})
+        self.json_out(handler, 200, {"ok": True, "state": "started", "target": target,
+                                     "from_version": cur, "dry_run": dry})
 
     def forward_main_json(self, handler, suffix, body=None):
         """面板模式 JSON 转发（service POST 体透传）。"""

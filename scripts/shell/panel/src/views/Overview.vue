@@ -69,9 +69,12 @@ function startPoll() {
       checked.value = { ...(checked.value || {}), official: r }
       const s = r && r.apply_state
       if (s && s.state === 'done') {
-        toast('ok', t.value.upgradeDone + ': ' + (s.target || ''))
-        try { await apiPost('service', { action: 'restart-backend' }) } catch (e) { /* ignore */ }
+        const ver = (s.from_version || '?') + ' → ' + (s.to_version || s.target || '?')
+        toast(s.restarted === false ? 'err' : 'ok',
+              t.value.upgradeDone + ': ' + ver + (s.restarted === false ? ' · ' + t.value.restartFail : ''))
         refreshStatus()
+      } else if (s && s.state === 'up_to_date') {
+        toast('ok', t.value.upToDate)
       } else if (s && s.state === 'failed') {
         toast('err', t.value.upgradeFailed)
       } else {
@@ -150,10 +153,12 @@ const appUrl = computed(() => (st.value.app && st.value.app.app_url) || null)
         <a v-if="checked.url" :href="checked.url" target="_blank" rel="noopener" class="lnk">{{ t.openRelease }}</a>
       </div>
       <div v-if="official" class="hintrow">
-        {{ t.officialCh }}: {{ t.curVer }} {{ official.current || '?' }} · {{ t.latestVer }} {{ official.latest || '?' }}
+        {{ t.officialCh }}: {{ t.curVer }} {{ official.current || '?' }} · {{ t.latestVer }} {{ official.latest || '?' }}<template v-if="official.runtime"> · {{ t.runtimeVer }} {{ official.runtime }}</template>
         <a v-if="official.has_update" class="lnk pointer" @click="applyOfficial">{{ t.clickUpgrade }}</a>
+        <span v-else-if="official.current && official.latest && !official.has_update" class="lnk">· {{ t.upToDate }}</span>
+        <span v-if="official.runtime_stale" class="lnk">· {{ t.runtimeStale }}</span>
         <span v-if="applyState && applyState.state === 'running'">· {{ t.upgradeRunning }}</span>
-        <span v-else-if="applyState && applyState.state === 'done'">· {{ t.upgradeDone }}</span>
+        <span v-else-if="applyState && applyState.state === 'done'">· {{ t.upgradeDone }}<template v-if="applyState.restarted === false"> · {{ t.restartFail }}</template></span>
         <span v-else-if="applyState && applyState.state === 'failed'">· {{ t.upgradeFailed }}</span>
         <a :href="official.url" target="_blank" rel="noopener" class="lnk">PyPI</a>
       </div>

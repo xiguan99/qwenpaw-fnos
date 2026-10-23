@@ -1,5 +1,5 @@
 appname               = qwenpaw
-version               = 2.2.2.2
+version               = 2.2.2.3
 display_name          = QwenPaw
 desc                  = 基于上游 QwenPaw 的 fnOS 原生打包版：个人 AI 助理，多频道接入 + Skills 扩展 + 三层记忆。<br/>桌面入口经统一网关 /app/qwenpaw；首次安装需联网（安装时在线重建 Python 环境，约几分钟）
 platform              = x86
