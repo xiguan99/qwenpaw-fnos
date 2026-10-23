@@ -162,17 +162,18 @@ const appUrl = computed(() => (st.value.app && st.value.app.app_url) || null)
     </div>
 
     <div class="hint" style="margin-top:16px" v-if="checked">
-      <div>{{ t.projCh }}: {{ t.curVer }} {{ checked.current || '?' }} · {{ t.latestVer }} {{ checked.latest || '?' }}
+      <div>{{ t.projCh }}: {{ t.curVer }} {{ checked.current || '?' }} · {{ t.latestVer }} {{ checked.latest || '—' }}
+        <span v-if="checked.ok === false" class="lnk is-disabled">· {{ t.checkFail }}</span>
         <template v-if="checked.published_at"> · {{ t.publishedAt }} {{ String(checked.published_at).slice(0, 10) }}</template>
         <a v-if="checked.url" :href="checked.url" target="_blank" rel="noopener" class="lnk">{{ t.openRelease }}</a>
       </div>
       <div v-if="official" class="hintrow">
         {{ t.officialCh }}: {{ t.curVer }} {{ official.current || '?' }} · {{ t.latestVer }} {{ official.latest || '?' }}<template v-if="official.runtime"> · {{ t.runtimeVer }} {{ official.runtime }}</template>
         <button v-if="official.has_update" class="lnk pointer" :disabled="busy" @click="applyOfficial">{{ t.clickUpgrade }}</button>
-        <span v-else class="lnk is-disabled" title="">{{ t.upToDate }}</span>
+        <span v-else class="lnk is-disabled">· {{ t.upToDate }}</span>
         <span v-if="official.runtime_stale" class="lnk">· {{ t.runtimeStale }}</span>
         <span v-if="applyState && applyState.state === 'running'">· {{ t.upgradeRunning }}</span>
-        <span v-else-if="applyState && applyState.state === 'done'">· {{ t.upgradeDone }}<template v-if="applyState.restarted === false"> · {{ t.restartFail }}</template></span>
+        <span v-else-if="applyState && applyState.state === 'done'">· {{ t.upgradeDone }}<template v-if="applyState.ended"> ({{ String(applyState.ended).slice(5, 16) }})</template><template v-if="applyState.restarted === false"> · {{ t.restartFail }}</template></span>
         <span v-else-if="applyState && applyState.state === 'failed'">· {{ t.upgradeFailed }}</span>
         <a :href="official.url" target="_blank" rel="noopener" class="lnk">PyPI</a>
       </div>
