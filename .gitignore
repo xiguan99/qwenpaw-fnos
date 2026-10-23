@@ -10,3 +10,4 @@ node_modules/
 __pycache__/
 .bak-*/
 *.tar.gz
+dist/*.bak-*

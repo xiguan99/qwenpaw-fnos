@@ -50,7 +50,12 @@ async function applyOfficial() {
   busy.value = true
   try {
     const r = await apiPost('official-apply', { confirm: true })
-    if (r && r.ok) {
+    if (r && r.ok && (r.state === 'up_to_date' || r.state === 'done')) {
+      // 已是最新 / 立即完成：不进入轮询，直接刷新状态
+      toast('ok', (r.message || t.value.upToDate) + (r.latest ? ' (' + r.latest + ')' : ''))
+      await reloadOfficial()
+      refreshStatus()
+    } else if (r && r.ok) {
       toast('ok', t.value.upgradeStarted)
       startPoll()
     } else toast('err', (r && r.error) || 'fail')
@@ -59,6 +64,13 @@ async function applyOfficial() {
   } finally {
     busy.value = false
   }
+}
+
+async function reloadOfficial() {
+  try {
+    const o = await apiGet('official-check')
+    checked.value = { ...(checked.value || {}), official: o }
+  } catch (e) { /* 保持旧值 */ }
 }
 
 function startPoll() {
@@ -72,9 +84,11 @@ function startPoll() {
         const ver = (s.from_version || '?') + ' → ' + (s.to_version || s.target || '?')
         toast(s.restarted === false ? 'err' : 'ok',
               t.value.upgradeDone + ': ' + ver + (s.restarted === false ? ' · ' + t.value.restartFail : ''))
+        await reloadOfficial()
         refreshStatus()
       } else if (s && s.state === 'up_to_date') {
         toast('ok', t.value.upToDate)
+        await reloadOfficial()
       } else if (s && s.state === 'failed') {
         toast('err', t.value.upgradeFailed)
       } else {
@@ -154,8 +168,8 @@ const appUrl = computed(() => (st.value.app && st.value.app.app_url) || null)
       </div>
       <div v-if="official" class="hintrow">
         {{ t.officialCh }}: {{ t.curVer }} {{ official.current || '?' }} · {{ t.latestVer }} {{ official.latest || '?' }}<template v-if="official.runtime"> · {{ t.runtimeVer }} {{ official.runtime }}</template>
-        <a v-if="official.has_update" class="lnk pointer" @click="applyOfficial">{{ t.clickUpgrade }}</a>
-        <span v-else-if="official.current && official.latest && !official.has_update" class="lnk">· {{ t.upToDate }}</span>
+        <button v-if="official.has_update" class="lnk pointer" :disabled="busy" @click="applyOfficial">{{ t.clickUpgrade }}</button>
+        <span v-else class="lnk is-disabled" title="">{{ t.upToDate }}</span>
         <span v-if="official.runtime_stale" class="lnk">· {{ t.runtimeStale }}</span>
         <span v-if="applyState && applyState.state === 'running'">· {{ t.upgradeRunning }}</span>
         <span v-else-if="applyState && applyState.state === 'done'">· {{ t.upgradeDone }}<template v-if="applyState.restarted === false"> · {{ t.restartFail }}</template></span>
@@ -168,7 +182,9 @@ const appUrl = computed(() => (st.value.app && st.value.app.app_url) || null)
 
 <style scoped>
 .ovwrap { display: flex; flex-direction: column; min-height: 0; flex: 1; overflow-y: auto; }
-.lnk { color: var(--accent); }
+.lnk { color: var(--accent); border: 0; background: none; font: inherit; padding: 0 2px; }
+.lnk.is-disabled { color: var(--muted, #8b949e); cursor: not-allowed; }
+.lnk:disabled { opacity: .6; cursor: default; }
 .hintrow { margin-top: 6px; }
 .pointer { cursor: pointer; }
 </style>
