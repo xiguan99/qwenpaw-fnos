@@ -1,5 +1,5 @@
 appname               = qwenpaw-panel
-version               = 2.2.2.4
+version               = 2.2.2.5
 display_name          = QwenPaw Panel
 desc                  = QwenPaw 管理面板（独立 app）：总览/服务控制/检查更新/插件/工作区/模型/应用设置/日志/快照。需搭配 qwenpaw 主 app 使用（主 app 端口 2277）。本包免联网安装
 platform              = x86
