@@ -406,6 +406,34 @@ def strip_prefix(path: str, prefix: str) -> str:
     return path or "/"
 
 
+
+def _ver_key(v):
+    """把 2.2.2.5 / 2.2.2.post1 / v0.22.2.3 归一成可比较的元组。
+
+    只用于「有没有更高版本」的判定：2.2.2.5 > 2.2.2.3、2.2.2.post1 > 2.2.2。
+    """
+    s = str(v or "").strip().lstrip("vV")
+    post = 0
+    m = re.search(r"[.\-]?post[.\-]?(\d+)$", s, re.I)
+    if m:
+        post = int(m.group(1))
+        s = s[: m.start()]
+    nums = []
+    for part in re.split(r"[.\-+]", s):
+        nums.append(int(part) if part.isdigit() else 0)
+    while len(nums) < 4:
+        nums.append(0)
+    return tuple(nums[:4]) + (post,)
+
+
+def _is_newer(latest, current):
+    """latest 是否严格比 current 新（同版本或更低都返回 False，避免版本倒退提示升级）。"""
+    try:
+        return _ver_key(latest) > _ver_key(current)
+    except Exception:
+        return bool(latest) and bool(current) and str(latest) != str(current)
+
+
 class FnShellHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     STATIC_EXTS = (".js", ".css", ".png", ".jpg", ".jpeg", ".svg", ".ico", ".woff", ".woff2", ".ttf", ".webp", ".map")
@@ -840,7 +868,7 @@ class ShellRuntime:
         latest_tag = str(latest.get("tag_name") or "").lstrip("v")
         return {"ok": True, "current": cur,
                "latest": latest_tag or None,
-               "has_update": bool(latest_tag) and bool(cur) and latest_tag != cur,
+               "has_update": _is_newer(latest_tag, cur),
                "url": latest.get("html_url"),
                "published_at": latest.get("published_at"),
                "notes": (latest.get("body") or "")[:600]}
@@ -928,7 +956,7 @@ class ShellRuntime:
         return {"ok": latest is not None, "current": cur, "latest": latest, "runtime": runtime,
                 # runtime_stale：venv 已升级但运行进程还是旧代码（重启前的真实状态）
                 "runtime_stale": bool(runtime) and bool(cur) and runtime != cur,
-                "has_update": bool(latest) and bool(cur) and latest != cur,
+                "has_update": _is_newer(latest, cur),
                 "via": idx, "apply_state": apply_state,
                 "url": "https://pypi.org/project/%s/" % OFFICIAL_PKG}
 
