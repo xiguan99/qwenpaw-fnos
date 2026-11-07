@@ -13,7 +13,8 @@ FP_BIN="$ROOT/scripts/fnpack-1.2.3-linux-amd64"
 export PATH="/var/apps/nodejs_v24/target/bin:${PATH}"
 PY_RUNTIME="/var/apps/python312/target/bin/python3"
 # 版本号 = 上游版本.构建号（上游版本来自 git tag）
-UP_VER="$(git -C "$UPSTREAM" describe --tags --abbrev=0 | sed 's/^v//')"
+# VER_OVERRIDE 用于上游 tag 含 post/beta 后缀时人工定三段号（如 v2.2.2.post1 → 2.2.2）
+UP_VER="${VER_OVERRIDE:-$(git -C "$UPSTREAM" describe --tags --abbrev=0 | sed 's/^v//')}"
 BUILD_NUM="$(cat "$ROOT/VERSION" | tr -d '[:space:]' | rev | cut -d. -f1 | rev)"
 VERSION="${UP_VER}.${BUILD_NUM}"
 [ -f "$ROOT/VERSION" ] && echo "$VERSION" > "$ROOT/VERSION"
