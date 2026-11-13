@@ -3,7 +3,7 @@
 QwenPaw 的飞牛 OS（fnOS）原生应用打包仓库。
 
 - 上游：https://github.com/agentscope-ai/QwenPaw （个人 AI 助理：多频道接入 + Skills 扩展 + 三层记忆）
-- 版本号规则：`上游版本.构建号`（见 `VERSION`），当前 2.2.2.1
+- 版本号规则：`上游版本.构建号`（见 `VERSION`），当前 2.3.0.1
 - 上游许可 Apache-2.0（LICENSE 照抄上游）；fngateway 网关中间件来自 https://github.com/yuexps/FnDepot （`scripts/vendor/fngateway.py`，保留原作者头部）
 
 ## 安装与首次启动（Getting Started）
