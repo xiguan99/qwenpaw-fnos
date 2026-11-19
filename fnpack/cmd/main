@@ -24,7 +24,8 @@ PY_RUNTIME="/var/apps/python312/target/bin/python3"
 [ -x "${PY_RUNTIME}" ] || PY_RUNTIME="$(command -v python3 || true)"
 
 export HOME="${DATA_DIR}"
-export TRIM_CLI_PATH="${APP_DIR}/vendor/trim-cli/scripts/trim-cli"   # 官方技能授权（捆绑 trim-cli）
+export FNOS_CLI_PATH="${APP_DIR}/vendor/fnos-cli/scripts/fnos-cli"   # 官方技能授权（捆绑 fnos-cli，vendor 为源，部署进技能池）
+export PATH="${DATA_DIR}/skill_pool/fnos-cli/scripts:${PATH}"        # 聊天内技能直接调用已部署的 fnos-cli
 export QWENPAW_PORT="2277"          # 对外端口：壳（fnshell 直通反代）监听，桌面图标（经网关+桥接）与浏览器直连都走它
 export QWENPAW_INTERNAL_PORT="22771"  # 本体内部端口，仅 127.0.0.1，由壳反代
 
@@ -70,9 +71,83 @@ ensure_venv() {
     return 0
 }
 
+ensure_fnos_skill() {
+    # 官方 fnos 技能：vendor → 技能池（reconcile_pool_manifest 盘扫自动登记）+ 预置 CLI 缓存（首跑不联网）
+    local src="${APP_DIR}/vendor/fnos-cli"
+    [ -f "${src}/scripts/fnos-cli" ] || return 0
+    local ver
+    ver=$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "${src}/manifest.json" 2>/dev/null | head -1)
+    [ -n "${ver}" ] || return 0
+    local pool="${DATA_DIR}/skill_pool/fnos-cli"
+    local stamp="${DATA_DIR}/.fnos-skill-version"
+    local cache="${DATA_DIR}/.cache/fnos-cli/${ver}/linux-x64/fnos-cli"
+    if [ -x "${pool}/scripts/fnos-cli" ] && [ -x "${cache}" ] && [ "$(cat "${stamp}" 2>/dev/null)" = "${ver}" ]; then
+        return 0
+    fi
+    log_msg "部署官方 fnos 技能 (${ver})"
+    mkdir -p "${DATA_DIR}/skill_pool" 2>/dev/null || return 0
+    rm -rf "${pool}.tmp" "${pool}.old" 2>/dev/null
+    if ! cp -a "${src}" "${pool}.tmp"; then log_err "fnos 技能复制失败"; return 0; fi
+    [ -d "${pool}" ] && mv "${pool}" "${pool}.old"
+    mv "${pool}.tmp" "${pool}"
+    rm -rf "${pool}.old" 2>/dev/null
+    chmod 755 "${pool}/scripts/fnos-cli" 2>/dev/null
+    # 预置缓存：runtime-manifest.json 给出 linux-x64 资产的 gz 名/尺寸/sha256 与解压后校验值
+    local meta gz_name gz_sha bin_size bin_sha
+    # 输出单行 JSON（键恒在）：bash 的 read 对 tab 型 IFS 也会折叠连续空字段，禁用 tab 协议
+    meta=$("${PY_RUNTIME}" - "${src}/runtime-manifest.json" <<'PYEOF' 2>/dev/null
+import json, platform, sys
+m = json.load(open(sys.argv[1]))
+plat = "linux-x64" if platform.machine() in ("x86_64", "AMD64") else "linux-arm64"
+a = (m.get("assets") or {}).get(plat)
+if a:
+    print(json.dumps({"name": str(a.get("name") or a.get("fileName") or ""),
+                      "sha256": str(a.get("sha256") or a.get("gzSha256") or ""),
+                      "binarySize": str(a.get("binarySize") or a.get("uncompressedSize") or ""),
+                      "binarySha256": str(a.get("binarySha256") or a.get("sha256Uncompressed") or "")}))
+PYEOF
+)
+    [ -n "${meta}" ] || { log_msg "fnos 缓存预置跳过（runtime-manifest 解析失败，技能首跑自动联网下载）"; printf "%s" "${ver}" > "${stamp}"; return 0; }
+    jget() { printf '%s' "${meta}" | "${PY_RUNTIME}" -c 'import json,sys; print(json.load(sys.stdin).get(sys.argv[1],""))' "$1"; }
+    gz_name=$(jget name); gz_sha=$(jget sha256); bin_size=$(jget binarySize); bin_sha=$(jget binarySha256)
+    local gz="${src}/bin/${gz_name}"
+    [ -f "${gz}" ] || gz=$(ls "${src}/bin/"*linux-x64.gz 2>/dev/null | head -1)
+    if [ -n "${gz_sha}" ] && [ -f "${gz}" ]; then
+        local actual
+        actual=$(sha256sum "${gz}" | awk '{print $1}')
+        [ "${actual}" = "${gz_sha}" ] || { log_err "fnos 二进制包校验失败，技能首跑自动联网下载"; gz=""; }
+    fi
+    if [ -n "${gz}" ] && [ -f "${gz}" ] && command -v gzip >/dev/null 2>&1; then
+        mkdir -p "$(dirname "${cache}")" 2>/dev/null
+        local tmp="${cache}.seeding"
+        if gzip -dc "${gz}" > "${tmp}" 2>/dev/null; then
+            local ok=1
+            if [ -n "${bin_size}" ] && [ "$(stat -c %s "${tmp}")" != "${bin_size}" ]; then ok=0; fi
+            if [ -n "${bin_sha}" ]; then
+                local bsha; bsha=$(sha256sum "${tmp}" | awk '{print $1}')
+                [ "${bsha}" = "${bin_sha}" ] || ok=0
+            fi
+            if [ "${ok}" = "1" ]; then
+                mv "${tmp}" "${cache}"
+                chmod 755 "${cache}"
+                log_msg "fnos 命令行缓存就绪: ${cache}"
+            else
+                rm -f "${tmp}"
+                log_err "fnos 二进制解压校验失败，技能首跑自动联网下载"
+            fi
+        else
+            rm -f "${tmp}"
+        fi
+    fi
+    [ "${RUN_USER}" != "root" ] && chown -R "${RUN_USER}" "${DATA_DIR}/skill_pool/fnos-cli" "${DATA_DIR}/.cache/fnos-cli" 2>/dev/null
+    printf "%s" "${ver}" > "${stamp}"
+    return 0
+}
+
 start_process() {
     status && return 0
     ensure_venv || return 1
+    ensure_fnos_skill
     log_msg "启动 qwenpaw (INTERNAL_PORT=${QWENPAW_INTERNAL_PORT}, USER=${RUN_USER}, DATA=${DATA_DIR})"
     as_run_user "cd '${APP_DIR}' && exec '${VENV}/bin/python' -m qwenpaw app --host 127.0.0.1 --port ${QWENPAW_INTERNAL_PORT} >> '${LOG_FILE}' 2>&1 & echo \$!" &
     pid=$!
@@ -96,6 +171,7 @@ start_backend_only() {
     status && { log_msg "qwenpaw 已在运行"; return 0; }
     gw_status || { log_err "壳未运行，先 start"; return 1; }
     ensure_venv || return 1
+    ensure_fnos_skill
     log_msg "启动 qwenpaw 本体 (INTERNAL_PORT=${QWENPAW_INTERNAL_PORT})"
     as_run_user "cd '${APP_DIR}' && exec '${VENV}/bin/python' -m qwenpaw app --host 127.0.0.1 --port ${QWENPAW_INTERNAL_PORT} >> '${LOG_FILE}' 2>&1 & echo \$!" &
     pid=$!

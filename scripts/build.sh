@@ -44,12 +44,13 @@ ls -la "$APP/wheels"
 
 # ── 4) 运行时树组装 ──
 echo "[4/5] 组装 fnpack/app ..."
+rm -rf "$APP/__pycache__" scripts/shell/__pycache__
 cp scripts/shell/fnshell.py "$APP/fnshell.py"
-# 官方技能 trim-cli 默认捆绑（vendor 源=DSH 官方版副本，官方 zip 直链 403 网络受限）
-mkdir -p "$APP/vendor/trim-cli/scripts" "$APP/vendor/trim-cli/bin"
-cp scripts/vendor/trim-cli/scripts/trim-cli "$APP/vendor/trim-cli/scripts/"
-cp scripts/vendor/trim-cli/bin/trim-cli-linux-x64 "$APP/vendor/trim-cli/bin/"
-chmod +x "$APP/vendor/trim-cli/scripts/trim-cli" "$APP/vendor/trim-cli/bin/trim-cli-linux-x64"
+# 官方技能 fnos-cli 捆绑（0.6.2 全树 + 随包 linux 二进制 gz，装链预置缓存首跑不联网）
+rm -rf "$APP/vendor"
+mkdir -p "$APP/vendor"
+cp -a scripts/vendor/fnos-cli "$APP/vendor/fnos-cli"
+chmod 755 "$APP/vendor/fnos-cli/scripts/fnos-cli"
 # 双 app 返工（2026-10-21）：主包 direct 直通本体，不再捆绑面板（面板=独立 app，见 build-panel.sh）
 # 图标：上游官方资产 288×288 RGBA → 256/64（NAS 无 PIL，ffmpeg lanczos）
 SRC_ICON="$STAGE/console/public/qwenpaw.png"

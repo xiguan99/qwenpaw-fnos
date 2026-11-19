@@ -1470,46 +1470,85 @@ class ShellRuntime:
         except Exception as e:
             self.json_out(handler, 500, {"ok": False, "error": str(e)})
 
-    # ---------- 飞牛官方技能授权（trim-cli） ----------
-    def trim_cli_path(self):
-        for cand in (os.environ.get("TRIM_CLI_PATH"),
-                     shutil.which("trim-cli"),
-                     os.path.join(os.environ.get("HOME") or "", "skills", "fnos", "scripts", "trim-cli")):
+    # ---------- 飞牛官方技能授权（fnos-cli 0.6.2，两段式） ----------
+    FNOS_PROFILE = "qwenpaw-panel"
+    FNOS_AGENT = "qwenpaw"
+
+    def fnos_cli_path(self):
+        # 技能部署位置（cmd/main 把 vendor/fnos-cli 铺到 ${HOME}/skill_pool/fnos-cli）优先，vendor 兜底
+        home = os.environ.get("HOME") or ""
+        for cand in (os.path.join(home, "skill_pool", "fnos-cli", "scripts", "fnos-cli"),
+                     os.environ.get("FNOS_CLI_PATH"),
+                     shutil.which("fnos-cli"),
+                     os.path.join(home, "vendor", "fnos-cli", "scripts", "fnos-cli")):
             if cand and os.path.isfile(cand) and os.access(cand, os.X_OK):
                 return cand
         return None
 
-    def trim_cfg_dir(self):
-        # app 账户 $HOME 在 fnOS 托管下不可靠（目录可能不存在→trim-cli 写不进配置）；state 目录优先
-        root = self.state_dir or (os.environ.get("HOME") or "")
-        return os.path.join(root, ".config", "trim-cli") if root else None
-
-    def trim_cli_env(self):
+    def fnos_cli_env(self):
+        # 会话落文件（容器/服务环境无密钥环）；config/cache 与 cmd/main 预置缓存同路径（HOME=DATA_DIR）
         env = dict(os.environ)
-        home = os.environ.get("HOME") or ""
+        home = os.environ.get("HOME") or os.getcwd()
         env["HOME"] = home
-        cfg = self.trim_cfg_dir()
-        if cfg:
+        env["FNOS_CLI_SESSION_STORAGE"] = "file"
+        env["XDG_CONFIG_HOME"] = os.path.join(home, ".config")
+        env["XDG_CACHE_HOME"] = os.path.join(home, ".cache")
+        for d in (env["XDG_CONFIG_HOME"], env["XDG_CACHE_HOME"]):
             try:
-                os.makedirs(cfg, exist_ok=True)
+                os.makedirs(d, exist_ok=True)
             except Exception:
                 pass
-            env["TRIM_CLI_CONFIG_DIR"] = cfg
         return env
 
+    def _fnos_parse_json(self, text):
+        # 0.6.2 输出多行美化 JSON：从第一个 '{' 起做大括号平衡扫描（跳过字符串/转义）
+        start = text.find("{")
+        while start != -1:
+            depth = 0
+            in_str = False
+            esc = False
+            for i in range(start, len(text)):
+                ch = text[i]
+                if in_str:
+                    if esc:
+                        esc = False
+                    elif ch == "\\":
+                        esc = True
+                    elif ch == '"':
+                        in_str = False
+                elif ch == '"':
+                    in_str = True
+                elif ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        try:
+                            obj = json.loads(text[start:i + 1])
+                            if isinstance(obj, dict):
+                                return obj
+                        except Exception:
+                            pass
+                        break
+            start = text.find("{", start + 1)
+        return {}
+
+    def _fnos_run(self, args, timeout=25):
+        env = self.fnos_cli_env()
+        out = subprocess.run(args, env=env, capture_output=True, text=True, timeout=timeout)
+        return out.returncode, (out.stdout or "") + (out.stderr or "")
+
     def skill_auth_status(self):
-        cli = self.trim_cli_path()
+        cli = self.fnos_cli_path()
         if not cli:
             return {"authorized": False, "no_cli": True}
-        cfg = self.trim_cfg_dir()
-        active = os.path.join(cfg, "secure", "active.enc") if cfg else None
-        if not active or not os.path.exists(active):
-            return {"authorized": False, "username": None}
         try:
-            out = subprocess.run([cli, "user", "info"], env=self.trim_cli_env(),
-                                 capture_output=True, text=True, timeout=10)
-            u = json.loads(out.stdout) if out.returncode == 0 else {}
-            return {"authorized": True, "username": u.get("username")}
+            rc, out = self._fnos_run([cli, "--profile", self.FNOS_PROFILE, "system", "info"], timeout=12)
+            if rc != 0:
+                return {"authorized": False, "username": None}
+            data = self._fnos_parse_json(out).get("result") or {}
+            name = data.get("device_name") or data.get("hostname")
+            return {"authorized": True, "username": name}
         except Exception:
             return {"authorized": False, "username": None}
 
@@ -1531,46 +1570,26 @@ class ShellRuntime:
         self.skill_proc = None
 
     def skill_auth_start(self, handler):
-        cli = self.trim_cli_path()
+        cli = self.fnos_cli_path()
         if not cli:
             self.json_out(handler, 200, {"ok": False, "error": "no_cli", "url": None})
             return
-        with self.skill_lock:
-            self._skill_stop_locked()
-        script = shutil.which("script")
-        cmd = [script, "-qec", cli + " login --no-open", "/dev/null"] if script else [cli, "login", "--no-open"]
+        # 0.6.2 两段式：一次性 login --authorize-only，CLI 自存 pending verifier（无常驻进程）
         try:
-            p = subprocess.Popen(cmd, env=self.trim_cli_env(), stdin=subprocess.PIPE,
-                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+            rc, out = self._fnos_run([cli, "--profile", self.FNOS_PROFILE,
+                                      "login", "--authorize-only", "--agent-name", self.FNOS_AGENT], timeout=25)
         except Exception as e:
             self.json_out(handler, 500, {"ok": False, "error": str(e), "url": None})
             return
-        found = queue.Queue()
-
-        def scan():
-            try:
-                for line in p.stdout:
-                    if "/signin?" in line:
-                        hit = next((f for f in line.split() if "/signin?" in f), line.strip())
-                        i = hit.find("/signin?")
-                        found.put(hit[i:] if i != -1 else hit)
-                        break
-            except Exception:
-                pass
-
-        threading.Thread(target=scan, daemon=True).start()
-        try:
-            url = found.get(timeout=8)
-        except queue.Empty:
-            with self.skill_lock:
-                self._skill_stop_locked()
-            self.json_out(handler, 504, {"ok": False, "error": "wait_url_timeout", "url": None})
+        url = self._fnos_parse_json(out).get("authorization_url")
+        if rc != 0 or not url:
+            self.json_out(handler, 504, {"ok": False, "error": (out or "").strip()[:200] or "wait_url_timeout", "url": None})
             return
-        with self.skill_lock:
-            self.skill_proc, self.skill_stdin = p, p.stdin
-            self.skill_timer = threading.Timer(300, self._skill_stop_locked)
-            self.skill_timer.daemon = True
-            self.skill_timer.start()
+        # 授权链接里的 localhost 换成用户浏览器实际访问的 host（手机可用）
+        host = (handler.headers.get("X-Forwarded-Host") or handler.headers.get("Host") or "").split(",")[0].strip()
+        host = host.split(":")[0]
+        if host and host not in ("127.0.0.1", "localhost"):
+            url = url.replace("//localhost:", "//" + host + ":").replace("//127.0.0.1:", "//" + host + ":")
         self.json_out(handler, 200, {"ok": True, "url": url})
 
     def skill_auth_confirm(self, handler):
@@ -1578,46 +1597,34 @@ class ShellRuntime:
         if not code:
             self.json_out(handler, 400, {"ok": False, "error": "code_required"})
             return
-        with self.skill_lock:
-            p, stdin = self.skill_proc, self.skill_stdin
-            if not p or not stdin:
-                self.json_out(handler, 400, {"ok": False, "error": "no_pending_session"})
-                return
-            try:
-                stdin.write(code + "\n")
-                stdin.flush()
-            except Exception as e:
-                self._skill_stop_locked()
-                self.json_out(handler, 500, {"ok": False, "error": str(e)})
-                return
-            try:
-                stdin.close()
-            except Exception:
-                pass
-            self.skill_stdin = None
+        cli = self.fnos_cli_path()
+        if not cli:
+            self.json_out(handler, 200, {"ok": False, "error": "no_cli"})
+            return
         try:
-            rc = p.wait(timeout=15)
+            rc, out = self._fnos_run([cli, "--profile", self.FNOS_PROFILE, "login", "--code", code], timeout=40)
         except subprocess.TimeoutExpired:
-            self._skill_stop_locked()
             self.json_out(handler, 504, {"ok": False, "error": "verify_timeout"})
             return
-        with self.skill_lock:
-            if self.skill_proc is p:
-                self._skill_stop_locked()
+        except Exception as e:
+            self.json_out(handler, 500, {"ok": False, "error": str(e)})
+            return
         if rc != 0:
-            self.json_out(handler, 400, {"ok": False, "error": "verify_failed"})
+            self.json_out(handler, 400, {"ok": False, "error": (out or "").strip()[:200] or "verify_failed"})
             return
         self.json_out(handler, 200, dict(ok=True, **self.skill_auth_status()))
 
     def skill_auth_logout(self, handler):
-        cli = self.trim_cli_path()
+        cli = self.fnos_cli_path()
         if cli:
             try:
-                subprocess.run([cli, "logout"], env=self.trim_cli_env(), capture_output=True, timeout=15)
+                self._fnos_run([cli, "--profile", self.FNOS_PROFILE, "logout"], timeout=15)
             except Exception:
                 pass
-        cfgdir = os.path.join(os.environ.get("HOME") or "", ".config", "trim-cli")
-        for victim in (os.path.join(cfgdir, "secure"), os.path.join(cfgdir, "session.json")):
+        home = os.environ.get("HOME") or ""
+        victims = [os.path.join(home, ".config", "fnos-cli", "profiles"),
+                   os.path.join(home, ".config", "trim-cli")]
+        for victim in victims:
             try:
                 if os.path.isdir(victim):
                     shutil.rmtree(victim)
